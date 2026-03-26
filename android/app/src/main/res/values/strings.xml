@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Panaccess DRM credentials - replace with values provided by your operator -->
+    <string name="pan_username">exd_rcube</string>
+    <string name="pan_password">Qwerty_123</string>
+
+    <!-- Optional: other DRM-related values can be added here (branding, appVersion, apiToken) -->
+</resources>
