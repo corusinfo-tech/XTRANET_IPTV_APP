@@ -258,6 +258,50 @@ class MainActivity: FlutterActivity() {
                     }.start()
                 }
 
+                "getBouquets" -> {
+                    if (!drm!!.isInitialized) {
+                        result.error("DRM_ERROR", "DRM not initialized", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val sessionId = drm!!.sessionId ?: ""
+                    val params = HashMap<String, String>()
+                    params["sessionId"] = sessionId
+
+                    Thread {
+                        try {
+                            Log.i(TAG, "Fetching Bouquets with sessionId: $sessionId")
+                            drm!!.callCasFunction(object : ICasFunctionCaller {
+                                override fun onFailure(casError: CasError) {
+                                    Log.e(TAG, "Get Bouquets failed: ${casError.code}: ${casError.message}")
+                                    runOnUiThread {
+                                        result.error("BOUQUETS_ERROR", "Error ${casError.code}: ${casError.message}", casError.tag)
+                                    }
+                                }
+
+                                override fun onSuccess(jsonObject: JSONObject?) {
+                                    Log.i(TAG, "Get Bouquets success: $jsonObject")
+                                    runOnUiThread {
+                                        result.success(jsonObject?.toString())
+                                    }
+                                }
+
+                                override fun onTimeout() {
+                                    Log.e(TAG, "Get Bouquets timed out")
+                                    runOnUiThread {
+                                        result.error("BOUQUETS_TIMEOUT", "Bouquets fetch timed out", null)
+                                    }
+                                }
+                            }, "getBouquets", params, null, -1, 30000, false)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Get Bouquets exception: ${e.message}")
+                            runOnUiThread {
+                                result.error("BOUQUETS_EXCEPTION", e.message, null)
+                            }
+                        }
+                    }.start()
+                }
+
                 else -> result.notImplemented()
             }
         }

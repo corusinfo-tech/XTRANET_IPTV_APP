@@ -4,7 +4,10 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_bloc.dart';
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_event.dart';
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_state.dart';
-import 'package:xeranet_tv_application/Application/Presentation/FullScreen/playerscreen.dart';
+import 'package:xeranet_tv_application/Application/Presentation/FullScreen/fullscreen.dart';
+import 'package:xeranet_tv_application/Application/Presentation/MenuScreen/menuscreen.dart';
+import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
+import 'package:xeranet_tv_application/services/discovery_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -84,12 +87,33 @@ class _LoginScreenState extends State<LoginScreen> {
     return BlocConsumer<LoginBloc, LoginState>(
       listener: (context, state) {
         if (state is LoginSuccess) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PlayerScreen(streamUrl: state.streamUrl),
-            ),
+          // Find the initial channel from DiscoveryService
+          final discovery = DiscoveryService();
+          final streamId = discovery.selectedStreamId?.toString();
+          final stream = discovery.streams.firstWhere(
+            (s) => s["id"]?.toString() == streamId,
+            orElse: () => discovery.streams.isNotEmpty ? discovery.streams[0] : null,
           );
+          
+          if (stream != null) {
+            final channel = Channel.fromMap(stream);
+
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => FullScreenPlayerWidget(
+                  channel: channel,
+                  streamUrl: state.streamUrl,
+                ),
+              ),
+            );
+          } else {
+            // Fallback if no streams found
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(builder: (_) => const MainScreen()),
+            );
+          }
         } else if (state is LoginFailure) {
           ScaffoldMessenger.of(
             context,

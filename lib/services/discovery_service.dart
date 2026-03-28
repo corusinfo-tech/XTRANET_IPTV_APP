@@ -9,13 +9,17 @@ class DiscoveryService {
 
   List<dynamic> _categories = [];
   List<dynamic> _streams = [];
+  List<dynamic> _bouquets = [];
   dynamic _selectedStreamId;
   String? _selectedStreamUrl;
+  String? _selectedBouquetId;
 
   List<dynamic> get categories => _categories;
   List<dynamic> get streams => _streams;
+  List<dynamic> get bouquets => _bouquets;
   dynamic get selectedStreamId => _selectedStreamId;
   String? get selectedStreamUrl => _selectedStreamUrl;
+  String? get selectedBouquetId => _selectedBouquetId;
 
   /// Main entry point for content discovery
   Future<void> discoverAllContent() async {
@@ -31,9 +35,32 @@ class DiscoveryService {
       // Clear previous state to avoid stale data
       _categories = [];
       _streams = [];
+      _bouquets = [];
       _selectedStreamId = null;
       _selectedStreamUrl = null;
+      _selectedBouquetId = null;
       _categories = await PanDrmService.getOttCategoryGroups();
+
+      // First try bouquet query if supported by backend (cvGetBouquets).
+      _bouquets = await PanDrmService.getBouquets();
+      print("DiscoveryService: ═══════════════════════════════════════");
+      print("DiscoveryService: Fetched ${_bouquets.length} BOUQUETS:");
+      for (int i = 0; i < _bouquets.length; i++) {
+        final bouquet = _bouquets[i];
+        final id = bouquet["bouquetId"]?.toString() ?? "?";
+        final name = bouquet["name"]?.toString() ?? "Unknown";
+        final priority = bouquet["priority"]?.toString() ?? "?";
+        print("  [${i + 1}] ID: $id | NAME: $name | PRIORITY: $priority");
+      }
+      print("DiscoveryService: ═══════════════════════════════════════");
+
+      if (_bouquets.isNotEmpty) {
+        debugPrint(
+          "DiscoveryService: Bouquets present, parsing for channels...",
+        );
+        // Set first bouquet as default
+        _selectedBouquetId = _bouquets[0]["bouquetId"]?.toString();
+      }
 
       if (_categories.isEmpty) {
         debugPrint(
@@ -47,6 +74,34 @@ class DiscoveryService {
           for (var s in _streams.take(10)) {
             debugPrint(" - Stream Object: ${jsonEncode(s)}");
           }
+
+          // Print channels per bouquet
+          print("DiscoveryService: ═══════════════════════════════════════");
+          print("DiscoveryService: CHANNELS PER BOUQUET:");
+          for (final bouquet in _bouquets) {
+            final bouquetId = bouquet["bouquetId"]?.toString() ?? "?";
+            final bouquetName = bouquet["name"]?.toString() ?? "Unknown";
+            final channelsInBouquet =
+                _streams.where((s) {
+                  final ids = s["bouquetIds"] as List?;
+                  return ids != null && ids.contains(bouquetId);
+                }).toList();
+            print(
+              "  $bouquetName (ID: $bouquetId): ${channelsInBouquet.length} channels",
+            );
+            // Show first 3 channels for this bouquet
+            for (final channel in channelsInBouquet.take(3)) {
+              final chName = channel["name"]?.toString() ?? "?";
+              print("    - $chName");
+            }
+            if (channelsInBouquet.length > 3) {
+              print(
+                "    ... and ${channelsInBouquet.length - 3} more channels",
+              );
+            }
+          }
+          print("DiscoveryService: ═══════════════════════════════════════");
+
           final firstStream = _streams[0];
           _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
           _selectedStreamUrl = firstStream["url"];
@@ -100,5 +155,30 @@ class DiscoveryService {
       debugPrint("DiscoveryService: Error loading streams: $e");
       rethrow;
     }
+  }
+
+  /// Get streams for a specific bouquet
+  List<dynamic> getStreamsForBouquet(String bouquetId) {
+    if (bouquetId == "all") {
+      return _streams; // Return all streams
+    }
+    return _streams.where((stream) {
+      final bouquetIds = stream["bouquetIds"] as List?;
+      return bouquetIds != null && bouquetIds.contains(bouquetId);
+    }).toList();
+  }
+
+  /// Select a bouquet and filter streams
+  void selectBouquet(String bouquetId) {
+    _selectedBouquetId = bouquetId;
+    debugPrint("DiscoveryService: Selected bouquet: $bouquetId");
+  }
+
+  /// Get currently filtered streams based on selected bouquet
+  List<dynamic> getFilteredStreams() {
+    if (_selectedBouquetId == null || _selectedBouquetId == "all") {
+      return _streams;
+    }
+    return getStreamsForBouquet(_selectedBouquetId!);
   }
 }

@@ -6,8 +6,9 @@ import 'package:xeranet_tv_application/services/panaccess_drm_service.dart';
 
 class PlayerScreen extends StatefulWidget {
   final String streamUrl;
+  final int? startIndex;
 
-  const PlayerScreen({super.key, required this.streamUrl});
+  const PlayerScreen({super.key, required this.streamUrl, this.startIndex});
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -43,13 +44,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   // Error message from native player (null = no error)
   String? _playerError;
 
+  // The actual stream object currently highlighted in the channel list.
+  // Used as source of truth for _confirmAndPlay — avoids any index mismatch.
+  dynamic _highlightedStream;
+
   @override
   void initState() {
     super.initState();
+    _playingStreamIndex = widget.startIndex ?? 0;
     _currentPlayingStream =
         _discoveryService.streams.isNotEmpty
-            ? _discoveryService.streams[0]
+            ? _discoveryService.streams[_playingStreamIndex]
             : null;
+    _highlightedStreamIndex = _playingStreamIndex;
+    _highlightedStream = _currentPlayingStream; // start highlighted = playing
 
     final int streamsCount = _discoveryService.streams.length;
     // Align initialIndex to be a multiple of streamsCount near the middle.
@@ -100,15 +108,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _videoFocusNode.requestFocus();
   }
 
-  /// When the channel list opens, sync the highlighted position to the playing stream.
+  /// When the channel list opens, snap highlight to the currently playing stream.
   void _syncHighlightToPlaying() {
     if (_discoveryService.streams.isEmpty) return;
     final int streamsCount = _discoveryService.streams.length;
 
-    // Keep the highlighted virtual index aligned with the playing stream index
-    final int base = ((_highlightedVirtualIndex ~/ streamsCount)) * streamsCount;
+    // Recalculate virtual index so it maps to _playingStreamIndex within the
+    // current "region" of the infinite list (avoids scroll jumps).
+    final int base = (_highlightedVirtualIndex ~/ streamsCount) * streamsCount;
     _highlightedVirtualIndex = base + _playingStreamIndex;
     _highlightedStreamIndex = _playingStreamIndex;
+    _highlightedStream = _discoveryService.streams[_playingStreamIndex];
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -135,7 +145,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // Listen for errors coming up from the native player
     _channel!.setMethodCallHandler((call) async {
       if (call.method == 'onPlayerError') {
-        final msg = call.arguments['message'] as String? ?? 'Stream unavailable';
+        final msg =
+            call.arguments['message'] as String? ?? 'Stream unavailable';
         if (mounted) {
           setState(() => _playerError = msg);
         }
@@ -184,8 +195,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return;
     } else if (event.logicalKey == LogicalKeyboardKey.select ||
         event.logicalKey == LogicalKeyboardKey.enter) {
-      // Show channel info dialog
-      _showChannelInfoDialog();
+      // Navigate back to MainScreen
+      Navigator.pop(context);
       return;
     }
   }
@@ -197,24 +208,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _highlightedVirtualIndex += direction;
 
-    // Clamp within bounds
-    if (_highlightedVirtualIndex < 0) {
-      _highlightedVirtualIndex = streamsCount - 1;
+    // Wrap within infinite list: if we go below 1 full loop from start, jump
+    // forward one full cycle; if above the limit, jump back one full cycle.
+    // This keeps the virtual index always valid WITHOUT a jarring scroll jump.
+    if (_highlightedVirtualIndex < streamsCount) {
+      _highlightedVirtualIndex +=
+          streamsCount * ((_infiniteLoopCount ~/ 2) ~/ streamsCount);
     }
-    if (_highlightedVirtualIndex >= _infiniteLoopCount) {
-      _highlightedVirtualIndex = _infiniteLoopCount - streamsCount;
+    if (_highlightedVirtualIndex >= _infiniteLoopCount - streamsCount) {
+      _highlightedVirtualIndex -=
+          streamsCount * ((_infiniteLoopCount ~/ 2) ~/ streamsCount);
     }
 
     final int nextIndex = _highlightedVirtualIndex % streamsCount;
 
     setState(() {
       _highlightedStreamIndex = nextIndex;
+      _highlightedStream = _discoveryService.streams[nextIndex];
     });
 
-    // Restart auto-hide timer so the list doesn't disappear mid-browse
+    // Restart auto-hide timer
     _startHideTimer();
 
-    // Scroll to the highlighted channel
+    // Scroll to show the highlighted channel
     _scrollController.animateTo(
       20.0 + (_highlightedVirtualIndex * 172.0),
       duration: const Duration(milliseconds: 200),
@@ -225,8 +241,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// Confirm: play the currently highlighted channel and close the list.
   void _confirmAndPlay() {
     if (_discoveryService.streams.isEmpty) return;
-    final stream = _discoveryService.streams[_highlightedStreamIndex];
-    _playStream(_highlightedStreamIndex, stream);
+    // Use the stored _highlightedStream object directly — avoids ANY index mismatch.
+    final stream =
+        _highlightedStream ??
+        _discoveryService.streams[_highlightedStreamIndex];
+    final int index = _discoveryService.streams.indexOf(stream);
+    debugPrint(
+      "[PlayerScreen] confirmAndPlay: index=$index name=${stream['name']} id=${stream['id']}",
+    );
+    _playStream(index < 0 ? _highlightedStreamIndex : index, stream);
     _hideOverlay();
   }
 
@@ -235,10 +258,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_discoveryService.streams.isEmpty) return;
     final int streamsCount = _discoveryService.streams.length;
 
-    int nextIndex = _playingStreamIndex + direction;
-    if (nextIndex < 0) nextIndex = streamsCount - 1;
-    if (nextIndex >= streamsCount) nextIndex = 0;
+    // Advance the virtual index continuously
+    _highlightedVirtualIndex += direction;
 
+    // Wrap within infinite list bounds smoothly
+    if (_highlightedVirtualIndex < streamsCount) {
+      _highlightedVirtualIndex +=
+          streamsCount * ((_infiniteLoopCount ~/ 2) ~/ streamsCount);
+    }
+    if (_highlightedVirtualIndex >= _infiniteLoopCount - streamsCount) {
+      _highlightedVirtualIndex -=
+          streamsCount * ((_infiniteLoopCount ~/ 2) ~/ streamsCount);
+    }
+
+    final int nextIndex = _highlightedVirtualIndex % streamsCount;
+    _highlightedStream = _discoveryService.streams[nextIndex];
     _playStream(nextIndex, _discoveryService.streams[nextIndex]);
   }
 
@@ -246,22 +280,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _playStream(int index, dynamic stream) async {
     final int currentZap = ++_zapCounter;
 
+    // Guard against invalid index
+    final int safeIndex = index.clamp(0, _discoveryService.streams.length - 1);
+
     setState(() {
-      _playingStreamIndex = index;
-      _highlightedStreamIndex = index;
+      _playingStreamIndex = safeIndex;
+      _highlightedStreamIndex = safeIndex;
       _currentPlayingStream = stream;
-      _playerError = null; // clear any previous error
+      _highlightedStream = stream;
+      _playerError = null;
     });
+
+    debugPrint(
+      "[PlayerScreen] playStream: index=$safeIndex name=${stream['name']} id=${stream['id']}",
+    );
 
     final rawUrl = stream["url"] ?? stream["id"]?.toString();
     if (rawUrl != null) {
       try {
         final url = await PanDrmService.getStreamUrl(rawUrl);
+        debugPrint("[PlayerScreen] getStreamUrl returned: $url");
         if (currentZap == _zapCounter && url != null) {
           _channel?.invokeMethod("changeStream", {"streamUrl": url});
+        } else if (currentZap != _zapCounter) {
+          debugPrint(
+            "[PlayerScreen] Zap superseded (zap#$currentZap < current#$_zapCounter), skipping.",
+          );
         }
       } catch (e) {
-        debugPrint("PlayerScreen: Failed to get Stream URL: $e");
+        debugPrint("[PlayerScreen] Failed to get Stream URL: $e");
       }
     }
   }
@@ -284,10 +331,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  const Color(0xFF1a1a2e),
-                  const Color(0xFF0f3460),
-                ],
+                colors: [const Color(0xFF1a1a2e), const Color(0xFF0f3460)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
@@ -313,24 +357,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.white12),
                   ),
-                  child: logoUrl != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.network(
-                            logoUrl,
-                            fit: BoxFit.contain,
-                            errorBuilder: (_, __, ___) => const Icon(
-                              Icons.tv,
-                              color: Colors.white38,
-                              size: 40,
+                  child:
+                      logoUrl != null
+                          ? ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.network(
+                              logoUrl,
+                              fit: BoxFit.contain,
+                              errorBuilder:
+                                  (_, __, ___) => const Icon(
+                                    Icons.tv,
+                                    color: Colors.white38,
+                                    size: 40,
+                                  ),
                             ),
+                          )
+                          : const Icon(
+                            Icons.tv,
+                            color: Colors.white38,
+                            size: 40,
                           ),
-                        )
-                      : const Icon(
-                          Icons.tv,
-                          color: Colors.white38,
-                          size: 40,
-                        ),
                 ),
                 const SizedBox(height: 16),
                 // Channel name
@@ -443,7 +489,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     child: Container(
                       margin: const EdgeInsets.symmetric(horizontal: 48),
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 28, vertical: 20),
+                        horizontal: 28,
+                        vertical: 20,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.black87,
                         borderRadius: BorderRadius.circular(16),
@@ -452,8 +500,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.signal_cellular_connected_no_internet_4_bar,
-                              color: Colors.redAccent, size: 42),
+                          const Icon(
+                            Icons.signal_cellular_connected_no_internet_4_bar,
+                            color: Colors.redAccent,
+                            size: 42,
+                          ),
                           const SizedBox(height: 12),
                           const Text(
                             'Channel Unavailable',
@@ -555,20 +606,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
         SizedBox(
-          height: 180,
+          height: 150,
           child: Focus(
             focusNode: _streamsFocusNode,
             child: ListView.builder(
               controller: _scrollController,
               scrollDirection: Axis.horizontal,
               itemCount: _infiniteLoopCount,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(horizontal: 15),
               itemBuilder: (context, index) {
                 final streamIndex = index % streams.length;
                 final stream = streams[streamIndex];
                 // Highlight = browsing cursor; Selected (blue) = currently playing
                 final bool isPlaying = streamIndex == _playingStreamIndex;
-                final bool isHighlighted = streamIndex == _highlightedStreamIndex;
+                final bool isHighlighted =
+                    streamIndex == _highlightedStreamIndex;
 
                 return _buildStreamItem(
                   stream,
@@ -605,25 +657,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
         width: 160,
         margin: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-          color: isPlaying
-              ? Colors.blueAccent.withOpacity(0.85)
-              : Colors.white10,
+          color:
+              isPlaying ? Colors.blueAccent.withOpacity(0.85) : Colors.white10,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: isHighlighted
-                ? Colors.amberAccent
-                : (isPlaying ? Colors.white : Colors.transparent),
+            color:
+                isHighlighted
+                    ? Colors.amberAccent
+                    : (isPlaying ? Colors.white : Colors.transparent),
             width: isHighlighted ? 4 : 2,
           ),
-          boxShadow: isHighlighted
-              ? [
-                  BoxShadow(
-                    color: Colors.amber.withOpacity(0.35),
-                    blurRadius: 12,
-                    spreadRadius: 2,
-                  )
-                ]
-              : [],
+          boxShadow:
+              isHighlighted
+                  ? [
+                    BoxShadow(
+                      color: Colors.amber.withOpacity(0.35),
+                      blurRadius: 12,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                  : [],
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -636,21 +689,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   color: Colors.black26,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: logoUrl != null
-                    ? Image.network(
-                        logoUrl,
-                        fit: BoxFit.contain,
-                        errorBuilder: (c, e, s) => const Icon(
-                          Icons.tv,
-                          color: Colors.white54,
-                          size: 40,
-                        ),
-                      )
-                    : const Icon(
-                        Icons.tv,
-                        color: Colors.white54,
-                        size: 40,
-                      ),
+                child:
+                    logoUrl != null
+                        ? Image.network(
+                          logoUrl,
+                          fit: BoxFit.contain,
+                          errorBuilder:
+                              (c, e, s) => const Icon(
+                                Icons.tv,
+                                color: Colors.white54,
+                                size: 40,
+                              ),
+                        )
+                        : const Icon(Icons.tv, color: Colors.white54, size: 40),
               ),
             ),
             Padding(
@@ -663,8 +714,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 12,
-                  fontWeight:
-                      isPlaying ? FontWeight.bold : FontWeight.normal,
+                  fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
                 ),
               ),
             ),

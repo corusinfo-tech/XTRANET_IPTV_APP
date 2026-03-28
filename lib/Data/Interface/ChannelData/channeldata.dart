@@ -7,6 +7,7 @@ class Channel {
   final String logoUrl;
   final String language;
   final String quality;
+  final String streamingUrl;
 
   Channel({
     required this.id,
@@ -17,6 +18,7 @@ class Channel {
     required this.logoUrl,
     required this.language,
     required this.quality,
+    required this.streamingUrl,
   });
 
   factory Channel.fromMap(Map<String, dynamic> m) {
@@ -24,11 +26,14 @@ class Channel {
       id: m['id']?.toString() ?? '',
       name: m['name']?.toString() ?? '',
       serviceId: int.tryParse(m['serviceId']?.toString() ?? '0') ?? 0,
-      categoryId: m['categoryId']?.toString() ?? '',
-      channelNumber: int.tryParse(m['channelNumber']?.toString() ?? '0') ?? 0,
-      logoUrl: m['logoUrl']?.toString() ?? '',
-      language: m['language']?.toString() ?? 'EN',
-      quality: m['quality']?.toString() ?? 'HD',
+      categoryId: (m['bouquetIds'] != null && m['bouquetIds'].isNotEmpty) 
+          ? m['bouquetIds'][0].toString() 
+          : 'all',
+      channelNumber: int.tryParse(m['lcn']?.toString() ?? '0') ?? 0,
+      logoUrl: m['img']?.toString() ?? m['logo']?.toString() ?? '',
+      language: (m['epgLanguages'] != null && m['epgLanguages'].isNotEmpty) ? m['epgLanguages'][0].toString() : 'EN',
+      quality: 'HD',
+      streamingUrl: m['url']?.toString() ?? '',
     );
   }
 }

@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:xeranet_tv_application/Application/Presentation/OttPlatformsHomeScreen/ottplatformshomescreen.dart';
 import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
 import 'package:xeranet_tv_application/Application/Presentation/MenuScreen/menuscreen.dart';
+import 'package:xeranet_tv_application/services/discovery_service.dart';
+import 'package:xeranet_tv_application/services/panaccess_drm_service.dart';
 
 class FullScreenPlayerWidget extends StatefulWidget {
   final Channel channel;
@@ -22,7 +24,8 @@ class FullScreenPlayerWidget extends StatefulWidget {
 
 class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
     with TickerProviderStateMixin {
-  // late YoutubePlayerController _ytController;
+  // Using PanDrmService
+
   final FocusNode _focusNode = FocusNode();
 
   late AnimationController _infoController;
@@ -30,27 +33,20 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
   Animation<Offset>? _slide;
 
   Timer? _hideTimer;
+  late DiscoveryService _discoveryService;
+
+  MethodChannel? _channel;
+  late Channel _currentChannel;
+  late String _currentStreamUrl;
+  int _zapCounter = 0;
 
   @override
   void initState() {
     super.initState();
-
-    const sampleUrl = "https://youtu.be/3TYABnOSgCE?si=KyPM_kX_MtL_1fCl";
-    // final videoId = YoutubePlayer.convertUrlToId(sampleUrl)!;
-
-    // _ytController = YoutubePlayerController(
-    //   initialVideoId: videoId,
-    //   flags: const YoutubePlayerFlags(
-    //     autoPlay: true,
-    //     mute: false,
-    //     loop: true,
-    //     disableDragSeek: true,
-    //     hideControls: true,
-    //     controlsVisibleAtStart: false,
-    //     enableCaption: false,
-    //   ),
-    // );
-
+    _currentChannel = widget.channel;
+    _currentStreamUrl = widget.streamUrl;
+    _discoveryService = DiscoveryService();
+    
     _infoController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
@@ -83,9 +79,40 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
     });
   }
 
+  Future<String?> getDrmStreamUrl(String rawUrl) async {
+    return await PanDrmService.getStreamUrl(rawUrl);
+  }
+
+  void _onPlatformViewCreated(int id) {
+    _channel = MethodChannel('native_video_player_$id');
+  }
+
+  Future<void> _zapChannel(int direction) async {
+    if (_discoveryService.streams.isEmpty) return;
+    
+    final currentIndex = _discoveryService.streams.indexWhere((s) => s["id"]?.toString() == _currentChannel.id);
+    int nextIndex = currentIndex + direction;
+    
+    if (nextIndex < 0) nextIndex = _discoveryService.streams.length - 1;
+    if (nextIndex >= _discoveryService.streams.length) nextIndex = 0;
+    
+    final stream = _discoveryService.streams[nextIndex];
+    final channel = Channel.fromMap(stream);
+
+    final currentZap = ++_zapCounter;
+    final streamUrl = await getDrmStreamUrl(channel.streamingUrl);
+    if (currentZap == _zapCounter && streamUrl != null && mounted) {
+      setState(() {
+        _currentChannel = channel;
+        _currentStreamUrl = streamUrl;
+      });
+      _channel?.invokeMethod("changeStream", {"streamUrl": streamUrl});
+      _showInfoBar();
+    }
+  }
+
   @override
   void dispose() {
-   // _ytController.dispose();
     _infoController.dispose();
     _hideTimer?.cancel();
     _focusNode.dispose();
@@ -105,11 +132,21 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
 
           _showInfoBar();
 
-          if (event.logicalKey == LogicalKeyboardKey.contextMenu ||
+          if (event.logicalKey == LogicalKeyboardKey.enter ||
+              event.logicalKey == LogicalKeyboardKey.select) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => MainScreen(currentChannel: _currentChannel)),
+            );
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            _zapChannel(-1);
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            _zapChannel(1);
+          } else if (event.logicalKey == LogicalKeyboardKey.contextMenu ||
               event.logicalKey == LogicalKeyboardKey.keyM) {
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const MainScreen()),
+              MaterialPageRoute(builder: (context) => MainScreen(currentChannel: _currentChannel)),
             );
           } else if (event.logicalKey == LogicalKeyboardKey.home ||
               event.logicalKey == LogicalKeyboardKey.keyH) {
@@ -126,22 +163,17 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            Center(
-              child:
-              //  YoutubePlayer(
-              //   controller: _ytController,
-              //   aspectRatio: 16 / 9,
-              // ),
-              Text(
-                "Video Player Placeholder",
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.7),
-                  fontSize: 18,
-                  fontStyle: FontStyle.italic,
-                ),
+            Positioned.fill(
+              child: AndroidView(
+                viewType: 'native_video_player',
+                layoutDirection: TextDirection.ltr,
+                creationParams: {"streamUrl": _currentStreamUrl},
+                creationParamsCodec: const StandardMessageCodec(),
+                onPlatformViewCreated: _onPlatformViewCreated,
               ),
             ),
 
+            // Top Info Bar (Logo & Time)
             Positioned(
               top: 40,
               left: 40,
@@ -153,18 +185,19 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                       height: 60,
                       width: 60,
                       decoration: BoxDecoration(
+                        color: Colors.white10,
                         borderRadius: BorderRadius.circular(20),
-                        image: DecorationImage(
-                          image: NetworkImage(
-                            "https://image.slidesharecdn.com/starmoviessecretscreening-141021132127-conversion-gate02/75/Star-movies-secret-screening-1-2048.jpg",
-                          ),
-                          fit: BoxFit.cover,
-                        ),
                       ),
+                      child: _currentChannel.logoUrl.isNotEmpty 
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: Image.network(_currentChannel.logoUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white24)),
+                          )
+                        : const Icon(Icons.tv, color: Colors.white24),
                     ),
                     const SizedBox(width: 20),
                     Text(
-                      "Star Movies",
+                      _currentChannel.name,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 25,
@@ -184,7 +217,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 child: StreamBuilder(
                   stream: Stream.periodic(const Duration(seconds: 1)),
                   builder: (_, __) {
-                    final now = TimeOfDay.now();
+                    final now = DateTime.now();
                     return Text(
                       "${now.hour}:${now.minute.toString().padLeft(2, '0')}",
                       style: const TextStyle(
@@ -198,6 +231,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
               ),
             ),
 
+            // Bottom Info Bar
             Positioned(
               left: 0,
               right: 0,
@@ -209,12 +243,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                   child: Center(
                     child: Container(
                       width: MediaQuery.of(context).size.width * 0.90,
-
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 22,
-                        vertical: 10,
-                      ),
-
+                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
                       decoration: BoxDecoration(
                         color: Colors.black.withOpacity(0.85),
                         borderRadius: BorderRadius.circular(26),
@@ -223,171 +252,54 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                           width: 1.0,
                         ),
                       ),
-
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
-
                         children: [
                           Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              Container(
-                                height: 30,
-                                width: 30,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(6),
-                                  color: Colors.white.withOpacity(0.9),
-                                  image: const DecorationImage(
-                                    image: NetworkImage(
-                                      "https://image.slidesharecdn.com/starmoviessecretscreening-141021132127-conversion-gate02/75/Star-movies-secret-screening-1-2048.jpg",
-                                    ),
-                                    fit: BoxFit.cover,
-                                  ),
+                              Text(
+                                "CH ${_currentChannel.id}",
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.85),
+                                  fontSize: 14,
                                 ),
                               ),
-
-                              const SizedBox(width: 10),
-
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    "Channel 121",
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.85),
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                  Text(
-                                    "Star Movies HD",
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-
                               const Spacer(),
-
                               Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
-                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: Colors.redAccent.withOpacity(0.90),
+                                  color: Colors.amber.withOpacity(0.90),
                                   borderRadius: BorderRadius.circular(14),
                                 ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      height: 6,
-                                      width: 6,
-                                      decoration: const BoxDecoration(
-                                        color: Colors.white,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    const Text(
-                                      "LIVE",
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
+                                child: const Text(
+                                  "Press OK for Menu",
+                                  style: TextStyle(
+                                    color: Colors.black,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ],
                           ),
-
                           const SizedBox(height: 10),
-
                           Text(
-                            "Spider Man",
+                            _currentChannel.name,
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-
-                          const SizedBox(height: 2),
-
-                          Text(
-                            "11:00 AM - 12:30 PM",
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.70),
-                              fontSize: 12,
-                            ),
-                          ),
-
                           const SizedBox(height: 10),
-
-                          Stack(
-                            children: [
-                              Container(
-                                height: 4,
-                                width: double.infinity,
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.18),
-
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                              ),
-                              FractionallySizedBox(
-                                widthFactor: 0.42,
-                                child: Container(
-                                  height: 4,
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(10),
-                                    gradient: const LinearGradient(
-                                      colors: [Colors.redAccent, Colors.red],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 12),
-
                           Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    "Up Next - 12:30 PM",
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.55),
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 3),
-                                  const Text(
-                                    "Malayali Manga",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Icon(
-                                Icons.keyboard_arrow_right_rounded,
-                                color: Colors.white.withOpacity(0.70),
-                                size: 26,
-                              ),
+                              const Icon(Icons.hd, color: Colors.blueAccent),
+                              const SizedBox(width: 8),
+                              const Text("1080p • Stereo • Live", style: TextStyle(color: Colors.white54)),
                             ],
-                          ),
+                          )
                         ],
                       ),
                     ),

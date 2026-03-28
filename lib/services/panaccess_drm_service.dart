@@ -40,8 +40,13 @@ class PanDrmService {
   }
 
   /// LOGIN
-  static Future<void> login(String username, String password,
-      {String license = "", String pin = "", bool useMAC = false}) async {
+  static Future<void> login(
+    String username,
+    String password, {
+    String license = "",
+    String pin = "",
+    bool useMAC = false,
+  }) async {
     try {
       debugPrint("Starting login for $username (useMAC: $useMAC)...");
       final result = await _channel.invokeMethod("login", {
@@ -106,13 +111,16 @@ class PanDrmService {
 
   /// CALL CAS FUNCTION (CABVIEW)
   /// Returns the JSON response as a String
-  static Future<String?> callCasFunction(String functionName, Map<String, String> params) async {
+  static Future<String?> callCasFunction(
+    String functionName,
+    Map<String, String> params,
+  ) async {
     try {
       final String? response = await _channel.invokeMethod("callCasFunction", {
         "functionName": functionName,
         "params": params,
       });
-      
+
       debugPrint("CAS Response [$functionName]: $response");
       return response;
     } catch (e) {
@@ -123,7 +131,9 @@ class PanDrmService {
 
   /// GET OTT CATEGORY GROUPS (Helper)
   static Future<List<dynamic>> getOttCategoryGroups() async {
-    final response = await callCasFunction("getOttCategoryGroups", {"includeList": "true"});
+    final response = await callCasFunction("getOttCategoryGroups", {
+      "includeList": "true",
+    });
     if (response == null) return [];
     try {
       final decoded = jsonDecode(response);
@@ -136,14 +146,18 @@ class PanDrmService {
   }
 
   /// GET OTT STREAMS BY CATEGORY ID (Helper)
-  static Future<List<dynamic>> getOttStreamsByCategoryId(dynamic categoryId) async {
+  static Future<List<dynamic>> getOttStreamsByCategoryId(
+    dynamic categoryId,
+  ) async {
     final response = await callCasFunction("getOttStreamsByCategoryId", {
-      "categoryId": categoryId.toString()
+      "categoryId": categoryId.toString(),
     });
     if (response == null) return [];
     try {
       final decoded = jsonDecode(response);
-      debugPrint("PanDrmService: Decoded Streams for Category $categoryId: $decoded");
+      debugPrint(
+        "PanDrmService: Decoded Streams for Category $categoryId: $decoded",
+      );
       return decoded["answer"] ?? decoded["return"] ?? [];
     } catch (e) {
       debugPrint("Error parsing Streams JSON: $e");
@@ -155,7 +169,9 @@ class PanDrmService {
   static Future<void> setManagementServer(String serverUrl) async {
     // Note: The current native library version _7 handles server discovery automatically
     // or through the init() parameters. This method is locally managed for logic flow.
-    debugPrint("PanDrmService: Management server selection: $serverUrl (Native discovery active)");
+    debugPrint(
+      "PanDrmService: Management server selection: $serverUrl (Native discovery active)",
+    );
   }
 
   /// GET DRM INFO
@@ -175,7 +191,10 @@ class PanDrmService {
     if (response == null) return [];
     try {
       final decoded = jsonDecode(response);
-      return decoded["answer"] ?? decoded["return"] ?? decoded["licenses"] ?? [];
+      return decoded["answer"] ??
+          decoded["return"] ??
+          decoded["licenses"] ??
+          [];
     } catch (e) {
       debugPrint("Error parsing Streaming Licenses: $e");
       return [];
@@ -214,5 +233,32 @@ class PanDrmService {
       debugPrint("Error parsing Available Streams: $e");
       return [];
     }
+  }
+
+  /// GET BOUQUETS
+  static Future<List<dynamic>> getBouquets() async {
+    final List<String> candidateFunctions = ["cvGetBouquets", "getBouquets"];
+    for (var fn in candidateFunctions) {
+      try {
+        final response = await callCasFunction(fn, {});
+        print("Bouquets response from $fn: $response");
+        if (response == null) continue;
+        final decoded = jsonDecode(response);
+        print("PanDrmService: Decoded Bouquets from $fn: $decoded");
+        final bouquets =
+            decoded["return"] ?? decoded["bouquets"] ?? decoded["answer"] ?? [];
+        if (bouquets is List) {
+          return bouquets;
+        }
+      } catch (e) {
+        print("Get Bouquets error for $fn: $e");
+        if (e is PlatformException) {
+          if (e.code == 'no_access_to_function' || e.code == 'BOUQUETS_ERROR') {
+            continue; // try next function name
+          }
+        }
+      }
+    }
+    return [];
   }
 }
