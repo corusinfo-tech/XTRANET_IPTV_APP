@@ -186,12 +186,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return; // swallow other keys while overlay is visible
     }
 
-    // ─── Channel list is HIDDEN (fullscreen mode) ─────────────────────────
-    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      _zapAndPlay(-1); // instant zap + play
+    // ─── Back behavior in fullscreen: close app
+    if (event.logicalKey == LogicalKeyboardKey.escape ||
+        event.logicalKey == LogicalKeyboardKey.goBack ||
+        event.logicalKey == LogicalKeyboardKey.backspace) {
+      SystemNavigator.pop();
       return;
-    } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      _zapAndPlay(1); // instant zap + play
+    }
+
+    // ─── Channel list is HIDDEN (fullscreen mode) ─────────────────────────
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      _zapAndPlay(1); // move forward
+      return;
+    } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      _zapAndPlay(-1); // move backward
       return;
     } else if (event.logicalKey == LogicalKeyboardKey.select ||
         event.logicalKey == LogicalKeyboardKey.enter) {

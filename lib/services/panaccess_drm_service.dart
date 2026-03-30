@@ -129,42 +129,6 @@ class PanDrmService {
     }
   }
 
-  /// GET OTT CATEGORY GROUPS (Helper)
-  static Future<List<dynamic>> getOttCategoryGroups() async {
-    final response = await callCasFunction("getOttCategoryGroups", {
-      "includeList": "true",
-    });
-    if (response == null) return [];
-    try {
-      final decoded = jsonDecode(response);
-      debugPrint("PanDrmService: Decoded Categories: $decoded");
-      return decoded["answer"] ?? decoded["return"] ?? [];
-    } catch (e) {
-      debugPrint("Error parsing Categories JSON: $e");
-      return [];
-    }
-  }
-
-  /// GET OTT STREAMS BY CATEGORY ID (Helper)
-  static Future<List<dynamic>> getOttStreamsByCategoryId(
-    dynamic categoryId,
-  ) async {
-    final response = await callCasFunction("getOttStreamsByCategoryId", {
-      "categoryId": categoryId.toString(),
-    });
-    if (response == null) return [];
-    try {
-      final decoded = jsonDecode(response);
-      debugPrint(
-        "PanDrmService: Decoded Streams for Category $categoryId: $decoded",
-      );
-      return decoded["answer"] ?? decoded["return"] ?? [];
-    } catch (e) {
-      debugPrint("Error parsing Streams JSON: $e");
-      return [];
-    }
-  }
-
   /// SET MANAGEMENT SERVER
   static Future<void> setManagementServer(String serverUrl) async {
     // Note: The current native library version _7 handles server discovery automatically

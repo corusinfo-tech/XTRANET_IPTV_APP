@@ -108,11 +108,8 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             );
           } else {
-            // Fallback if no streams found
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const MainScreen()),
-            );
+            // Revert if no active streaming packages found for user
+            context.read<LoginBloc>().add(LogoutRequested());
           }
         } else if (state is LoginFailure) {
           ScaffoldMessenger.of(

@@ -1,5 +1,13 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_bloc.dart';
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_event.dart';
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_state.dart';
+import 'package:xeranet_tv_application/Application/Presentation/FullScreen/fullscreen.dart';
+import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
+import 'package:xeranet_tv_application/services/discovery_service.dart';
+import 'package:xeranet_tv_application/services/panaccess_drm_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,6 +21,7 @@ class _SplashScreenState extends State<SplashScreen>
   late AnimationController pulseController;
   late AnimationController floatController;
   late AnimationController glowController;
+  bool _timerFinished = false;
 
   @override
   void initState() {
@@ -33,10 +42,28 @@ class _SplashScreenState extends State<SplashScreen>
       duration: const Duration(seconds: 2),
     )..repeat(reverse: true);
 
-    // Auto-navigate
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
     Future.delayed(const Duration(seconds: 3), () {
-      if (mounted) Navigator.pushReplacementNamed(context, '/login');
+      if (mounted) {
+        setState(() {
+          _timerFinished = true;
+        });
+      }
     });
+
+    try {
+      await PanDrmService.initDrm();
+      await PanDrmService.setManagementServer("https://cv01.panaccess.com");
+    } catch (e) {
+      debugPrint("DRM Init Failed: $e");
+    }
+
+    if (mounted) {
+      context.read<LoginBloc>().add(CheckSavedCredentials());
+    }
   }
 
   @override
@@ -47,48 +74,93 @@ class _SplashScreenState extends State<SplashScreen>
     super.dispose();
   }
 
+  void _navigateToFullScreen(String streamUrl) {
+    final discovery = DiscoveryService();
+    final streamId = discovery.selectedStreamId?.toString();
+    final stream = discovery.streams.firstWhere(
+      (s) => s["id"]?.toString() == streamId,
+      orElse: () => discovery.streams.isNotEmpty ? discovery.streams[0] : null,
+    );
+    
+    if (stream != null) {
+      final channel = Channel.fromMap(stream);
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FullScreenPlayerWidget(
+            channel: channel,
+            streamUrl: streamUrl,
+          ),
+        ),
+      );
+    } else {
+      // In case streams aren't loaded properly
+      Navigator.pushReplacementNamed(context, '/login');
+    }
+  }
+
+  void _pollTimer(LoginState state) async {
+    while (!_timerFinished) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    if (mounted) {
+      if (state is LoginSuccess) {
+         _navigateToFullScreen(state.streamUrl);
+      } else {
+         Navigator.pushReplacementNamed(context, '/login');
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          /// BACKGROUND GRADIENT
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Color(0xFF05070F),
-                  Color(0xFF0B1222),
-                  Color(0xFF111827),
-                ],
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
+    return BlocListener<LoginBloc, LoginState>(
+      listener: (context, state) {
+        if (state is LoginSuccess && _timerFinished) {
+           _navigateToFullScreen(state.streamUrl);
+        } else if ((state is LoginInitial || state is LoginFailure) && _timerFinished) {
+           Navigator.pushReplacementNamed(context, '/login');
+        }
+        
+        if (!_timerFinished && (state is LoginSuccess || state is LoginInitial || state is LoginFailure)) {
+          _pollTimer(state);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    Color(0xFF05070F),
+                    Color(0xFF0B1222),
+                    Color(0xFF111827),
+                  ],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
               ),
             ),
-          ),
-
-          /// BLOBS
-          _glowBlob(Colors.blueAccent, size: 300, top: 0.15, left: 0.10),
-          _glowBlob(Colors.purpleAccent, size: 260, bottom: 0.20, right: 0.12),
-          _glowBlob(Colors.cyanAccent, size: 320, top: 0.45, right: 0.25),
-
-          /// CENTER CONTENT
-          Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                animatedAppName("XTRANET"),
-                const SizedBox(height: 25),
-              ],
+            _glowBlob(Colors.blueAccent, size: 300, top: 0.15, left: 0.10),
+            _glowBlob(Colors.purpleAccent, size: 260, bottom: 0.20, right: 0.12),
+            _glowBlob(Colors.cyanAccent, size: 320, top: 0.45, right: 0.25),
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  animatedAppName("XTRANET"),
+                  const SizedBox(height: 25),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  /// GLOW BLOB WIDGET
   Widget _glowBlob(
     Color color, {
     required double size,
@@ -99,8 +171,7 @@ class _SplashScreenState extends State<SplashScreen>
   }) {
     return Positioned(
       top: top != null ? MediaQuery.of(context).size.height * top : null,
-      bottom:
-          bottom != null ? MediaQuery.of(context).size.height * bottom : null,
+      bottom: bottom != null ? MediaQuery.of(context).size.height * bottom : null,
       left: left != null ? MediaQuery.of(context).size.width * left : null,
       right: right != null ? MediaQuery.of(context).size.width * right : null,
       child: AnimatedBuilder(
@@ -123,7 +194,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  /// LETTER-BY-LETTER NAME ANIMATION
   Widget animatedAppName(String text) {
     return Row(
       mainAxisSize: MainAxisSize.min,

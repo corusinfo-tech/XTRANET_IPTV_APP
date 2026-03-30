@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_bloc.dart';
-import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_event.dart';
 import 'package:xeranet_tv_application/Application/Presentation/LoginScreen/loginscreen.dart';
 import 'package:xeranet_tv_application/Application/Presentation/SplashScreen/splashscreen.dart';
 import 'package:xeranet_tv_application/services/panaccess_drm_service.dart';
 
-final RouteObserver<PageRoute> routeObserver = RouteObserver<PageRoute>();
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,8 +14,8 @@ void main() {
     BlocProvider(
       create: (context) => LoginBloc(),
       child: MaterialApp(
+        navigatorKey: navigatorKey,
         debugShowCheckedModeBanner: false,
-        navigatorObservers: [routeObserver],
         theme: ThemeData(
           pageTransitionsTheme: const PageTransitionsTheme(
             builders: {TargetPlatform.android: NoTransitionsBuilder()},

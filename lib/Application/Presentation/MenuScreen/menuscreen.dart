@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' as intl;
 
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_bloc.dart';
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_state.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:xeranet_tv_application/Application/Presentation/FullScreen/fullscreen.dart';
 import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
 import 'package:xeranet_tv_application/services/discovery_service.dart';
@@ -64,10 +67,12 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   final ScrollController categoryScrollController = ScrollController();
   final ScrollController channelScrollController = ScrollController();
 
-  Channel? selectedChannel;
-  MethodChannel? _previewChannel;
+  Channel? previewChannel;
+  MethodChannel? _previewChannelView;
   bool _isPreviewReady = false;
   int _previewZapCounter = 0;
+
+  final FocusNode _mainFocusNode = FocusNode();
 
   @override
   void initState() {
@@ -81,6 +86,10 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
         });
       }
     });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _mainFocusNode.requestFocus();
+    });
   }
 
   @override
@@ -89,6 +98,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
     previewTimer?.cancel();
     categoryScrollController.dispose();
     channelScrollController.dispose();
+    _mainFocusNode.dispose();
     super.dispose();
   }
 
@@ -108,34 +118,32 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
         }).toList(),
       ];
 
-      allChannels =
-          _discoveryService.streams.map<Channel>((stream) {
-            return Channel.fromMap(
-              stream is Map<String, dynamic>
-                  ? stream
-                  : Map<String, dynamic>.from(stream),
-            );
-          }).toList();
-
-      filterChannelsByCategory();
-
-      if (widget.currentChannel != null) {
-        final initialIdx = allChannels.indexWhere(
-          (c) => c.id == widget.currentChannel!.id,
+      allChannels = _discoveryService.streams.map<Channel>((stream) {
+        return Channel.fromMap(
+          stream is Map<String, dynamic>
+              ? stream
+              : Map<String, dynamic>.from(stream),
         );
-        if (initialIdx >= 0) {
-          selectedChannelIndex = initialIdx;
-          selectedChannel = allChannels[selectedChannelIndex];
-          selectedCategoryIndex = 0;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToCurrentChannel();
-          });
-        } else if (channels.isNotEmpty) {
-          selectedChannel = channels[selectedChannelIndex];
+      }).toList();
+
+      filterChannelsByCategory(initialization: true);
+
+      if (channels.isNotEmpty) {
+        if (widget.currentChannel != null) {
+          previewChannel = channels.firstWhere(
+            (c) => c.id == widget.currentChannel!.id,
+            orElse: () => channels[0],
+          );
+        } else {
+          previewChannel = channels[0];
         }
-      } else if (channels.isNotEmpty) {
-        selectedChannel = channels[selectedChannelIndex];
       }
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _mainFocusNode.requestFocus();
+        _scrollToCurrentCategory();
+        _scrollToCurrentChannel();
+      });
     } catch (e) {
       debugPrint("Error loading bouquets: $e");
     }
@@ -146,10 +154,10 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   }
 
   void _onPreviewPlatformViewCreated(int id) {
-    _previewChannel = MethodChannel('native_video_player_$id');
+    _previewChannelView = MethodChannel('native_video_player_$id');
     _isPreviewReady = true;
-    if (selectedChannel != null) {
-      _playPreview(selectedChannel!);
+    if (previewChannel != null) {
+      _playPreview(previewChannel!);
     }
   }
 
@@ -158,11 +166,14 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
     final currentZap = ++_previewZapCounter;
     final url = await getDrmStreamUrl(ch.streamingUrl);
     if (currentZap == _previewZapCounter && url != null && mounted) {
-      _previewChannel?.invokeMethod("changeStream", {"streamUrl": url});
+      _previewChannelView?.invokeMethod("changeStream", {"streamUrl": url});
     }
   }
 
   void _debouncedPreviewUpdate(Channel ch) {
+    setState(() {
+      previewChannel = ch;
+    });
     previewTimer?.cancel();
     previewTimer = Timer(const Duration(milliseconds: 500), () {
       if (mounted) _playPreview(ch);
@@ -183,31 +194,42 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
     }
   }
 
-  void filterChannelsByCategory() {
+  void _selectChannel(Channel ch) {
+    if (widget.currentChannel != null) {
+      Navigator.pop(context, ch);
+    } else {
+      _launchFullScreen(ch);
+    }
+  }
+
+  void filterChannelsByCategory({bool initialization = false}) {
     final sel = categories[selectedCategoryIndex];
     if (sel.id == "all") {
       channels = List.from(allChannels);
     } else {
-      channels =
-          allChannels.where((c) {
-            final stream = _discoveryService.streams.firstWhere(
-              (s) => s["id"]?.toString() == c.id,
-              orElse: () => null,
-            );
-            if (stream != null) {
-              final bIds = stream["bouquetIds"] as List?;
-              return bIds != null && bIds.contains(sel.id);
-            }
-            return false;
-          }).toList();
+      channels = allChannels.where((c) {
+        final stream = _discoveryService.streams.firstWhere(
+          (s) => s["id"]?.toString() == c.id,
+          orElse: () => null,
+        );
+        if (stream != null) {
+          final bIds = stream["bouquetIds"] as List?;
+          return bIds != null && bIds.contains(sel.id);
+        }
+        return false;
+      }).toList();
     }
 
     setState(() {
-      selectedChannelIndex = 0;
-      if (channels.isNotEmpty) {
-        selectedChannel = channels[0];
+      if (initialization && widget.currentChannel != null && sel.id == "all") {
+        final idx = channels.indexWhere((c) => c.id == widget.currentChannel!.id);
+        if (idx >= 0) {
+          selectedChannelIndex = idx;
+        } else {
+          selectedChannelIndex = 0;
+        }
       } else {
-        selectedChannel = null;
+        selectedChannelIndex = 0;
       }
     });
 
@@ -219,7 +241,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   void _scrollToCurrentCategory() {
     if (categoryScrollController.hasClients) {
       categoryScrollController.animateTo(
-        selectedCategoryIndex * 60.0,
+        selectedCategoryIndex * 62.0,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
@@ -229,7 +251,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   void _scrollToCurrentChannel() {
     if (channelScrollController.hasClients) {
       channelScrollController.animateTo(
-        selectedChannelIndex * 80.0,
+        selectedChannelIndex * 86.0,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
@@ -243,27 +265,100 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
     final headerHeight = 96.0 * scale;
     final timeStr = intl.DateFormat.jm().format(currentTime);
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F172A),
-      body: Shortcuts(
-        shortcuts: <LogicalKeySet, Intent>{
-          LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
-          LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+    return WillPopScope(
+      onWillPop: () async {
+        Navigator.pop(context, widget.currentChannel);
+        return false;
+      },
+      child: BlocListener<LoginBloc, LoginState>(
+        listener: (context, state) {
+          if (state is LoginDataLoaded) {
+            // Re-hydrate the memory lists retaining focus states
+            _loadBouquetsAndChannels();
+          }
         },
-        child: SafeArea(
-          child: Column(
-            children: [
-              _header(timeStr, headerHeight, scale),
-              Expanded(
-                child: Row(
-                  children: [
-                    _buildCategoryColumn(),
-                    _buildChannelColumn(),
-                    _buildPreviewColumn(),
-                  ],
-                ),
+        child: RawKeyboardListener(
+        focusNode: _mainFocusNode,
+        onKey: (event) {
+          if (event is RawKeyDownEvent) {
+            if (focusColumn == 'category') {
+              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                if (selectedCategoryIndex < categories.length - 1) {
+                  setState(() => selectedCategoryIndex++);
+                  filterChannelsByCategory();
+                  _scrollToCurrentCategory();
+                }
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                if (selectedCategoryIndex > 0) {
+                  setState(() => selectedCategoryIndex--);
+                  filterChannelsByCategory();
+                  _scrollToCurrentCategory();
+                }
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                  event.logicalKey == LogicalKeyboardKey.enter ||
+                  event.logicalKey == LogicalKeyboardKey.select) {
+                if (channels.isNotEmpty) {
+                  setState(() => focusColumn = 'channel');
+                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                }
+              }
+            } else if (focusColumn == 'channel') {
+              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                if (selectedChannelIndex < channels.length - 1) {
+                  setState(() => selectedChannelIndex++);
+                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                  _scrollToCurrentChannel();
+                }
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                if (selectedChannelIndex > 0) {
+                  setState(() => selectedChannelIndex--);
+                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                  _scrollToCurrentChannel();
+                }
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                setState(() => focusColumn = 'category');
+              } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                setState(() => focusColumn = 'preview');
+              } else if (event.logicalKey == LogicalKeyboardKey.enter ||
+                  event.logicalKey == LogicalKeyboardKey.select) {
+                _selectChannel(channels[selectedChannelIndex]);
+              }
+            } else if (focusColumn == 'preview') {
+              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                setState(() => focusColumn = 'channel');
+              } else if (event.logicalKey == LogicalKeyboardKey.enter ||
+                  event.logicalKey == LogicalKeyboardKey.select) {
+                if (previewChannel != null) {
+                  _selectChannel(previewChannel!);
+                }
+              }
+            }
+          }
+        },
+        child: Scaffold(
+          backgroundColor: const Color(0xFF0F172A),
+          body: Shortcuts(
+            shortcuts: <LogicalKeySet, Intent>{
+              LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
+              LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+            },
+            child: SafeArea(
+              child: Column(
+                children: [
+                  _header(timeStr, headerHeight, scale),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        _buildCategoryColumn(),
+                        _buildChannelColumn(),
+                        _buildPreviewColumn(),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
+          ),
           ),
         ),
       ),
@@ -271,16 +366,18 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   }
 
   Widget _buildCategoryColumn() {
-    final isFocused = focusColumn == "category";
+    final isFocusedColumn = focusColumn == "category";
     return Expanded(
       flex: 2,
       child: Container(
         decoration: BoxDecoration(
-          color:
-              isFocused
-                  ? Colors.blueAccent.withOpacity(0.05)
-                  : Colors.black.withOpacity(0.2),
+          color: isFocusedColumn
+              ? Colors.blueAccent.withOpacity(0.05)
+              : Colors.black.withOpacity(0.2),
           border: Border(
+            left: isFocusedColumn
+                ? const BorderSide(color: Colors.blueAccent, width: 4)
+                : const BorderSide(color: Colors.transparent, width: 4),
             right: BorderSide(color: Colors.white.withOpacity(0.05)),
           ),
         ),
@@ -290,76 +387,54 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
           padding: const EdgeInsets.symmetric(vertical: 20),
           itemBuilder: (context, index) {
             final cat = categories[index];
-            return Focus(
-              onFocusChange: (f) {
-                if (f) {
-                  setState(() {
-                    focusColumn = "category";
-                    selectedCategoryIndex = index;
-                  });
-                  filterChannelsByCategory();
-                  _scrollToCurrentCategory();
-                }
-              },
-              child: Builder(
-                builder: (ctx) {
-                  final hasFocus = Focus.of(ctx).hasFocus;
-                  return Transform.scale(
-                    scale: hasFocus ? 1.05 : 1.0,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: 50,
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow:
-                            hasFocus
-                                ? [
-                                  BoxShadow(
-                                    color: Colors.blueAccent.withOpacity(0.5),
-                                    blurRadius: 15,
-                                    spreadRadius: 2,
-                                  ),
-                                ]
-                                : [],
-                        gradient:
-                            hasFocus
-                                ? const LinearGradient(
-                                  colors: [
-                                    Color(0xFF2563EB),
-                                    Color(0xFF3B82F6),
-                                  ],
-                                )
-                                : null,
-                        color:
-                            hasFocus
-                                ? null
-                                : (index == selectedCategoryIndex
-                                    ? Colors.white.withOpacity(0.1)
-                                    : Colors.transparent),
-                      ),
-                      alignment: Alignment.centerLeft,
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        cat.name,
-                        maxLines: 1,
-                        style: TextStyle(
-                          color:
-                              hasFocus || index == selectedCategoryIndex
-                                  ? Colors.white
-                                  : Colors.white60,
-                          fontWeight:
-                              hasFocus || index == selectedCategoryIndex
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                  );
-                },
+            final isSelected = index == selectedCategoryIndex;
+            final isFocused = isFocusedColumn && isSelected;
+
+            return Transform.scale(
+              scale: isFocused ? 1.05 : 1.0,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                height: 50,
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: isFocused
+                      ? [
+                          BoxShadow(
+                            color: Colors.blueAccent.withOpacity(0.5),
+                            blurRadius: 15,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : [],
+                  gradient: isFocused
+                      ? const LinearGradient(
+                          colors: [
+                            Color(0xFF2563EB),
+                            Color(0xFF3B82F6),
+                          ],
+                        )
+                      : null,
+                  color: isFocused
+                      ? null
+                      : (isSelected
+                          ? Colors.white.withOpacity(0.15)
+                          : Colors.transparent),
+                ),
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  cat.name,
+                  maxLines: 1,
+                  style: TextStyle(
+                    color: isFocused
+                        ? Colors.white
+                        : Colors.white60,
+                    fontWeight: isFocused
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
+                ),
               ),
             );
           },
@@ -369,16 +444,18 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   }
 
   Widget _buildChannelColumn() {
-    final isFocused = focusColumn == "channel";
+    final isFocusedColumn = focusColumn == "channel";
     return Expanded(
       flex: 3,
       child: Container(
         decoration: BoxDecoration(
-          color:
-              isFocused
-                  ? Colors.blueAccent.withOpacity(0.05)
-                  : Colors.black.withOpacity(0.1),
+          color: isFocusedColumn
+              ? Colors.blueAccent.withOpacity(0.05)
+              : Colors.black.withOpacity(0.1),
           border: Border(
+            bottom: isFocusedColumn
+                ? const BorderSide(color: Colors.blueAccent, width: 4)
+                : const BorderSide(color: Colors.transparent, width: 4),
             right: BorderSide(color: Colors.white.withOpacity(0.05)),
           ),
         ),
@@ -388,128 +465,95 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
           padding: const EdgeInsets.symmetric(vertical: 20),
           itemBuilder: (context, index) {
             final ch = channels[index];
-            return Focus(
-              onFocusChange: (f) {
-                if (f) {
-                  setState(() {
-                    focusColumn = "channel";
-                    selectedChannelIndex = index;
-                    selectedChannel = ch;
-                  });
-                  _debouncedPreviewUpdate(ch);
-                  _scrollToCurrentChannel();
-                }
-              },
-              onKey: (node, event) {
-                if (event is RawKeyDownEvent &&
-                    (event.logicalKey == LogicalKeyboardKey.enter ||
-                        event.logicalKey == LogicalKeyboardKey.select)) {
-                  _launchFullScreen(ch);
-                  return KeyEventResult.handled;
-                }
-                return KeyEventResult.ignored;
-              },
-              child: Builder(
-                builder: (ctx) {
-                  final hasFocus = Focus.of(ctx).hasFocus;
-                  return Transform.scale(
-                    scale: hasFocus ? 1.05 : 1.0,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: 70,
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(15),
-                        boxShadow:
-                            hasFocus
-                                ? [
-                                  BoxShadow(
-                                    color: Colors.blueAccent.withOpacity(0.6),
-                                    blurRadius: 20,
-                                    spreadRadius: 3,
-                                  ),
-                                ]
-                                : [],
-                        gradient:
-                            hasFocus
-                                ? const LinearGradient(
-                                  colors: [
-                                    Color(0xFF2563EB),
-                                    Color(0xFF3B82F6),
-                                  ],
-                                )
-                                : null,
-                        color:
-                            hasFocus
-                                ? null
-                                : (index == selectedChannelIndex
-                                    ? Colors.white.withOpacity(0.05)
-                                    : Colors.transparent),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: Colors.black26,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child:
-                                ch.logoUrl.isNotEmpty
-                                    ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
-                                        ch.logoUrl,
-                                        errorBuilder:
-                                            (_, __, ___) => const Icon(
-                                              Icons.tv,
-                                              color: Colors.white24,
-                                            ),
-                                      ),
-                                    )
-                                    : const Icon(
-                                      Icons.tv,
-                                      color: Colors.white24,
-                                    ),
+            final isSelected = index == selectedChannelIndex;
+            final isFocused = isFocusedColumn && isSelected;
+
+            return Transform.scale(
+              scale: isFocused ? 1.05 : 1.0,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                height: 70,
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(15),
+                  boxShadow: isFocused
+                      ? [
+                          BoxShadow(
+                            color: Colors.blueAccent.withOpacity(0.6),
+                            blurRadius: 20,
+                            spreadRadius: 3,
                           ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  ch.name,
-                                  maxLines: 1,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                        ]
+                      : [],
+                  gradient: isFocused
+                      ? const LinearGradient(
+                          colors: [
+                            Color(0xFF2563EB),
+                            Color(0xFF3B82F6),
+                          ],
+                        )
+                      : null,
+                  color: isFocused
+                      ? null
+                      : (isSelected
+                          ? Colors.white.withOpacity(0.15)
+                          : Colors.transparent),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Colors.black26,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ch.logoUrl.isNotEmpty
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                ch.logoUrl,
+                                errorBuilder: (_, __, ___) => const Icon(
+                                  Icons.tv,
+                                  color: Colors.white24,
                                 ),
-                                Text(
-                                  "CH ${ch.channelNumber}",
-                                  style: TextStyle(
-                                    color:
-                                        hasFocus
-                                            ? Colors.white70
-                                            : Colors.white38,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
+                              ),
+                            )
+                          : const Icon(
+                              Icons.tv,
+                              color: Colors.white24,
+                            ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            ch.name,
+                            maxLines: 1,
+                            style: TextStyle(
+                              color: isFocused ? Colors.white : Colors.white60,
+                              fontSize: 16,
+                              fontWeight: isFocused
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          Text(
+                            "CH ${ch.channelNumber}",
+                            style: TextStyle(
+                              color: isFocused ? Colors.white70 : Colors.white38,
+                              fontSize: 12,
                             ),
                           ),
                         ],
                       ),
                     ),
-                  );
-                },
+                  ],
+                ),
               ),
             );
           },
@@ -519,7 +563,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   }
 
   Widget _buildPreviewColumn() {
-    final isFocused = focusColumn == "preview";
+    final isFocusedColumn = focusColumn == "preview";
     return Expanded(
       flex: 5,
       child: Container(
@@ -528,55 +572,34 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
           children: [
             Expanded(
               flex: 3,
-              child: Focus(
-                onFocusChange: (f) {
-                  if (f) setState(() => focusColumn = "preview");
-                },
-                onKey: (node, event) {
-                  if (event is RawKeyDownEvent &&
-                      (event.logicalKey == LogicalKeyboardKey.enter ||
-                          event.logicalKey == LogicalKeyboardKey.select)) {
-                    if (selectedChannel != null)
-                      _launchFullScreen(selectedChannel!);
-                    return KeyEventResult.handled;
-                  }
-                  return KeyEventResult.ignored;
-                },
-                child: Builder(
-                  builder: (ctx) {
-                    final hasFocus = Focus.of(ctx).hasFocus;
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      margin: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: hasFocus ? Colors.blueAccent : Colors.white10,
-                          width: hasFocus ? 3.0 : 1.0,
-                        ),
-                        boxShadow:
-                            hasFocus
-                                ? [
-                                  BoxShadow(
-                                    color: Colors.blueAccent.withOpacity(0.5),
-                                    blurRadius: 20,
-                                    spreadRadius: 4,
-                                  ),
-                                ]
-                                : [],
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: AndroidView(
-                          viewType: 'native_video_player',
-                          layoutDirection: TextDirection.ltr,
-                          creationParams: const {},
-                          creationParamsCodec: const StandardMessageCodec(),
-                          onPlatformViewCreated: _onPreviewPlatformViewCreated,
-                        ),
-                      ),
-                    );
-                  },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                margin: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isFocusedColumn ? Colors.blueAccent : Colors.white10,
+                    width: isFocusedColumn ? 3.0 : 1.0,
+                  ),
+                  boxShadow: isFocusedColumn
+                      ? [
+                          BoxShadow(
+                            color: Colors.blueAccent.withOpacity(0.5),
+                            blurRadius: 20,
+                            spreadRadius: 4,
+                          ),
+                        ]
+                      : [],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: AndroidView(
+                    viewType: 'native_video_player',
+                    layoutDirection: TextDirection.ltr,
+                    creationParams: const {},
+                    creationParamsCodec: const StandardMessageCodec(),
+                    onPlatformViewCreated: _onPreviewPlatformViewCreated,
+                  ),
                 ),
               ),
             ),
@@ -585,38 +608,37 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 40),
-                child:
-                    selectedChannel == null
-                        ? const SizedBox()
-                        : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              selectedChannel!.name,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 32,
-                                fontWeight: FontWeight.bold,
-                              ),
+                child: previewChannel == null
+                    ? const SizedBox()
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            previewChannel!.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
                             ),
-                            const SizedBox(height: 8),
-                            Text(
-                              "Channel ${selectedChannel!.channelNumber} • ${selectedChannel!.language} • ${selectedChannel!.quality}",
-                              style: const TextStyle(
-                                color: Colors.white38,
-                                fontSize: 16,
-                              ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            "Channel ${previewChannel!.channelNumber} • ${previewChannel!.language} • ${previewChannel!.quality}",
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 16,
                             ),
-                            const SizedBox(height: 24),
-                            const Text(
-                              "EPG Information would be displayed here for the current program.",
-                              style: TextStyle(
-                                color: Colors.white60,
-                                fontSize: 16,
-                              ),
+                          ),
+                          const SizedBox(height: 24),
+                          const Text(
+                            "EPG Information would be displayed here for the current program.",
+                            style: TextStyle(
+                              color: Colors.white60,
+                              fontSize: 16,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
+                      ),
               ),
             ),
           ],

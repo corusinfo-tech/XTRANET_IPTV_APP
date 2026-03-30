@@ -1,137 +1,106 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'panaccess_drm_service.dart';
+
+// Top-level function for background isolate computation
+List<dynamic> _parseData(String jsonStr) {
+  try {
+    return jsonDecode(jsonStr) as List<dynamic>;
+  } catch (e) {
+    return [];
+  }
+}
 
 class DiscoveryService {
   static final DiscoveryService _instance = DiscoveryService._internal();
   factory DiscoveryService() => _instance;
   DiscoveryService._internal();
 
-  List<dynamic> _categories = [];
   List<dynamic> _streams = [];
   List<dynamic> _bouquets = [];
   dynamic _selectedStreamId;
   String? _selectedStreamUrl;
   String? _selectedBouquetId;
 
-  List<dynamic> get categories => _categories;
+  List<dynamic> get categories => []; // Maintained for backward compatibility if needed
   List<dynamic> get streams => _streams;
   List<dynamic> get bouquets => _bouquets;
   dynamic get selectedStreamId => _selectedStreamId;
   String? get selectedStreamUrl => _selectedStreamUrl;
   String? get selectedBouquetId => _selectedBouquetId;
 
+  /// Load from local cache. Returns true if cache exists AND is not empty.
+  Future<bool> loadFromCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bStr = prefs.getString('cache_bouquets');
+    final sStr = prefs.getString('cache_streams');
+    
+    if (bStr != null) {
+      _bouquets = await compute(_parseData, bStr);
+      if (_bouquets.isNotEmpty) {
+        _selectedBouquetId = _bouquets[0]["bouquetId"]?.toString();
+      }
+    }
+    
+    if (sStr != null) {
+      _streams = await compute(_parseData, sStr);
+      if (_streams.isNotEmpty) {
+        final firstStream = _streams[0];
+        _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
+        _selectedStreamUrl = firstStream["url"];
+      }
+    }
+    
+    debugPrint("DiscoveryService: Loaded ${_bouquets.length} bouquets and ${_streams.length} streams from CACHE.");
+    
+    return _streams.isNotEmpty;
+  }
+
   /// Main entry point for content discovery
   Future<void> discoverAllContent() async {
     try {
-      debugPrint("DiscoveryService: Starting full content discovery...");
+      debugPrint("DiscoveryService: Starting parallel content discovery...");
 
-      final drmInfo = await PanDrmService.getDrmInfo();
-      debugPrint("DiscoveryService: Current DRM Info: $drmInfo");
-      debugPrint(
-        "DiscoveryService: Current Session ID: ${drmInfo?['sessionId']}",
-      );
+      // 1. Fetch APIs Simultaneously with Partial Failure Safety
+      final results = await Future.wait([
+        PanDrmService.getBouquets().catchError((e) {
+          debugPrint("Failed to fetch bouquets: $e");
+          return <dynamic>[];
+        }),
+        PanDrmService.getAvailableStreams().catchError((e) {
+          debugPrint("Failed to fetch streams: $e");
+          return <dynamic>[];
+        }),
+      ]);
 
-      // Clear previous state to avoid stale data
-      _categories = [];
-      _streams = [];
-      _bouquets = [];
-      _selectedStreamId = null;
-      _selectedStreamUrl = null;
-      _selectedBouquetId = null;
-      _categories = await PanDrmService.getOttCategoryGroups();
+      final fetchedBouquets = results[0];
+      final fetchedStreamsRaw = results[1];
 
-      // First try bouquet query if supported by backend (cvGetBouquets).
-      _bouquets = await PanDrmService.getBouquets();
-      print("DiscoveryService: ═══════════════════════════════════════");
-      print("DiscoveryService: Fetched ${_bouquets.length} BOUQUETS:");
-      for (int i = 0; i < _bouquets.length; i++) {
-        final bouquet = _bouquets[i];
-        final id = bouquet["bouquetId"]?.toString() ?? "?";
-        final name = bouquet["name"]?.toString() ?? "Unknown";
-        final priority = bouquet["priority"]?.toString() ?? "?";
-        print("  [${i + 1}] ID: $id | NAME: $name | PRIORITY: $priority");
+      // 2. Offload heavy stream parsing to background isolate to prevent UI freezing
+      final processedStreams = await compute(_parseData, jsonEncode(fetchedStreamsRaw));
+
+      _bouquets = fetchedBouquets;
+      _streams = processedStreams;
+
+      // 3. Save cache post-compute inside safe lock
+      // We only overwrite cache if data actually arrived successfully to prevent overwriting with blanks
+      if (_streams.isNotEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cache_bouquets', jsonEncode(_bouquets));
+        await prefs.setString('cache_streams', jsonEncode(_streams));
       }
-      print("DiscoveryService: ═══════════════════════════════════════");
 
       if (_bouquets.isNotEmpty) {
-        debugPrint(
-          "DiscoveryService: Bouquets present, parsing for channels...",
-        );
-        // Set first bouquet as default
+        debugPrint("DiscoveryService: Loaded ${_bouquets.length} bouquets.");
         _selectedBouquetId = _bouquets[0]["bouquetId"]?.toString();
       }
 
-      if (_categories.isEmpty) {
-        debugPrint(
-          "DiscoveryService: No categories found, attempting fallback to Available Streams...",
-        );
-        _streams = await PanDrmService.getAvailableStreams();
-        if (_streams.isNotEmpty) {
-          debugPrint(
-            "DiscoveryService: LOADED ${_streams.length} STREAMS (Showing Full Metadata for first 10):",
-          );
-          for (var s in _streams.take(10)) {
-            debugPrint(" - Stream Object: ${jsonEncode(s)}");
-          }
-
-          // Print channels per bouquet
-          print("DiscoveryService: ═══════════════════════════════════════");
-          print("DiscoveryService: CHANNELS PER BOUQUET:");
-          for (final bouquet in _bouquets) {
-            final bouquetId = bouquet["bouquetId"]?.toString() ?? "?";
-            final bouquetName = bouquet["name"]?.toString() ?? "Unknown";
-            final channelsInBouquet =
-                _streams.where((s) {
-                  final ids = s["bouquetIds"] as List?;
-                  return ids != null && ids.contains(bouquetId);
-                }).toList();
-            print(
-              "  $bouquetName (ID: $bouquetId): ${channelsInBouquet.length} channels",
-            );
-            // Show first 3 channels for this bouquet
-            for (final channel in channelsInBouquet.take(3)) {
-              final chName = channel["name"]?.toString() ?? "?";
-              print("    - $chName");
-            }
-            if (channelsInBouquet.length > 3) {
-              print(
-                "    ... and ${channelsInBouquet.length - 3} more channels",
-              );
-            }
-          }
-          print("DiscoveryService: ═══════════════════════════════════════");
-
-          final firstStream = _streams[0];
-          _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
-          _selectedStreamUrl = firstStream["url"];
-          debugPrint(
-            "DiscoveryService: Fallback success. Selected ID: $_selectedStreamId, URL: $_selectedStreamUrl",
-          );
-        }
-        return;
-      }
-
-      // 2. Automatically find first available streams to populate initial state
-      for (var group in _categories) {
-        final groupCats = group["categories"] as List?;
-        if (groupCats != null && groupCats.isNotEmpty) {
-          final firstCatId = groupCats[0]["id"];
-          debugPrint(
-            "DiscoveryService: Fetching streams for first category: $firstCatId",
-          );
-
-          _streams = await PanDrmService.getOttStreamsByCategoryId(firstCatId);
-          if (_streams.isNotEmpty) {
-            final firstStream = _streams[0];
-            _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
-            _selectedStreamUrl = firstStream["url"] ?? firstStream["id"];
-            debugPrint(
-              "DiscoveryService: Auto-selected Stream ID: $_selectedStreamId, URL: $_selectedStreamUrl",
-            );
-            break;
-          }
-        }
+      if (_streams.isNotEmpty) {
+        debugPrint("DiscoveryService: Loaded ${_streams.length} streams.");
+        final firstStream = _streams[0];
+        _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
+        _selectedStreamUrl = firstStream["url"];
       }
 
       debugPrint("DiscoveryService: Discovery completed successfully.");
@@ -141,26 +110,20 @@ class DiscoveryService {
     }
   }
 
-  /// Helper to get streams for a specific category
-  Future<void> loadStreamsForCategory(dynamic categoryId) async {
+  /// Silently update cache in the background 
+  Future<void> discoverAllContentSilently() async {
     try {
-      _streams = await PanDrmService.getOttStreamsByCategoryId(categoryId);
-      debugPrint(
-        "DiscoveryService: Loaded ${_streams.length} streams for Category $categoryId (Showing Full Metadata for first 10):",
-      );
-      for (var s in _streams.take(10)) {
-        debugPrint(" - Stream Object: ${jsonEncode(s)}");
-      }
+      await discoverAllContent();
     } catch (e) {
-      debugPrint("DiscoveryService: Error loading streams: $e");
-      rethrow;
+      debugPrint("Silent discovery failed: $e");
+      rethrow; // Upstream logic can handle session expiry if this fails catastrophically
     }
   }
 
-  /// Get streams for a specific bouquet
+  /// Helper methods
   List<dynamic> getStreamsForBouquet(String bouquetId) {
     if (bouquetId == "all") {
-      return _streams; // Return all streams
+      return _streams;
     }
     return _streams.where((stream) {
       final bouquetIds = stream["bouquetIds"] as List?;
@@ -168,13 +131,10 @@ class DiscoveryService {
     }).toList();
   }
 
-  /// Select a bouquet and filter streams
   void selectBouquet(String bouquetId) {
     _selectedBouquetId = bouquetId;
-    debugPrint("DiscoveryService: Selected bouquet: $bouquetId");
   }
 
-  /// Get currently filtered streams based on selected bouquet
   List<dynamic> getFilteredStreams() {
     if (_selectedBouquetId == null || _selectedBouquetId == "all") {
       return _streams;

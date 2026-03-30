@@ -19,6 +19,10 @@ class LoginSuccess extends LoginState {
   List<Object?> get props => [streamUrl];
 }
 
+class LoginDataLoading extends LoginState {}
+
+class LoginDataLoaded extends LoginState {}
+
 class LoginFailure extends LoginState {
   final String error;
   const LoginFailure({required this.error});
