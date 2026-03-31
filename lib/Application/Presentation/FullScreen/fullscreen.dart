@@ -166,12 +166,16 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 ),
               );
               if (result != null && result.id != _currentChannel.id) {
-                setState(() { _playerKeyCounter++; });
+                setState(() {
+                  _playerKeyCounter++;
+                });
                 await _playChannel(result);
               } else {
                 // MenuScreen's video preview steals the ExoPlayer decoder.
                 // We must force the FullScreen player to reconnect when returning.
-                setState(() { _playerKeyCounter++; });
+                setState(() {
+                  _playerKeyCounter++;
+                });
                 await _playChannel(_currentChannel);
               }
             } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
@@ -197,19 +201,19 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
               ),
 
               // Watermark Logo
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: Center(
-                    child: Opacity(
-                      opacity: 0.2,
-                      child: Image.asset(
-                        'asset/images/Zentryx logo.png',
-                        width: 300,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              // Positioned.fill(
+              //   child: IgnorePointer(
+              //     child: Center(
+              //       child: Opacity(
+              //         opacity: 0.2,
+              //         child: Image.asset(
+              //           'asset/images/Zentryx logo.png',
+              //           width: 300,
+              //         ),
+              //       ),
+              //     ),
+              //   ),
+              // ),
 
               // Top Info Bar (Logo & Time)
               Positioned(

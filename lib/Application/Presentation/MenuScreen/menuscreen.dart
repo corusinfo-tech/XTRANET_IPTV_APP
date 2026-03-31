@@ -6,6 +6,7 @@ import 'package:intl/intl.dart' as intl;
 
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_bloc.dart';
 import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_state.dart';
+import 'package:xeranet_tv_application/Application/BusinessLogic/Login/login_event.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:xeranet_tv_application/Application/Presentation/FullScreen/fullscreen.dart';
 import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
@@ -59,7 +60,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   int selectedChannelIndex = 0;
 
   DateTime currentTime = DateTime.now();
-  String focusColumn = 'category';
+  String focusColumn = 'category'; // 'category', 'channel', 'preview', 'logout'
 
   Timer? clockTimer;
   Timer? previewTimer;
@@ -118,13 +119,14 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
         }).toList(),
       ];
 
-      allChannels = _discoveryService.streams.map<Channel>((stream) {
-        return Channel.fromMap(
-          stream is Map<String, dynamic>
-              ? stream
-              : Map<String, dynamic>.from(stream),
-        );
-      }).toList();
+      allChannels =
+          _discoveryService.streams.map<Channel>((stream) {
+            return Channel.fromMap(
+              stream is Map<String, dynamic>
+                  ? stream
+                  : Map<String, dynamic>.from(stream),
+            );
+          }).toList();
 
       filterChannelsByCategory(initialization: true);
 
@@ -207,22 +209,25 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
     if (sel.id == "all") {
       channels = List.from(allChannels);
     } else {
-      channels = allChannels.where((c) {
-        final stream = _discoveryService.streams.firstWhere(
-          (s) => s["id"]?.toString() == c.id,
-          orElse: () => null,
-        );
-        if (stream != null) {
-          final bIds = stream["bouquetIds"] as List?;
-          return bIds != null && bIds.contains(sel.id);
-        }
-        return false;
-      }).toList();
+      channels =
+          allChannels.where((c) {
+            final stream = _discoveryService.streams.firstWhere(
+              (s) => s["id"]?.toString() == c.id,
+              orElse: () => null,
+            );
+            if (stream != null) {
+              final bIds = stream["bouquetIds"] as List?;
+              return bIds != null && bIds.contains(sel.id);
+            }
+            return false;
+          }).toList();
     }
 
     setState(() {
       if (initialization && widget.currentChannel != null && sel.id == "all") {
-        final idx = channels.indexWhere((c) => c.id == widget.currentChannel!.id);
+        final idx = channels.indexWhere(
+          (c) => c.id == widget.currentChannel!.id,
+        );
         if (idx >= 0) {
           selectedChannelIndex = idx;
         } else {
@@ -278,87 +283,99 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
           }
         },
         child: RawKeyboardListener(
-        focusNode: _mainFocusNode,
-        onKey: (event) {
-          if (event is RawKeyDownEvent) {
-            if (focusColumn == 'category') {
-              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                if (selectedCategoryIndex < categories.length - 1) {
-                  setState(() => selectedCategoryIndex++);
-                  filterChannelsByCategory();
-                  _scrollToCurrentCategory();
+          focusNode: _mainFocusNode,
+          onKey: (event) {
+            if (event is RawKeyDownEvent) {
+              if (focusColumn == 'category') {
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  if (selectedCategoryIndex < categories.length - 1) {
+                    setState(() => selectedCategoryIndex++);
+                    filterChannelsByCategory();
+                    _scrollToCurrentCategory();
+                  }
+                } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  if (selectedCategoryIndex == 0) {
+                    setState(() => focusColumn = 'logout');
+                  } else if (selectedCategoryIndex > 0) {
+                    setState(() => selectedCategoryIndex--);
+                    filterChannelsByCategory();
+                    _scrollToCurrentCategory();
+                  }
+                } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
+                    event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.select) {
+                  if (channels.isNotEmpty) {
+                    setState(() => focusColumn = 'channel');
+                    _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                  }
                 }
-              } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                if (selectedCategoryIndex > 0) {
-                  setState(() => selectedCategoryIndex--);
-                  filterChannelsByCategory();
-                  _scrollToCurrentCategory();
+              } else if (focusColumn == 'channel') {
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  if (selectedChannelIndex < channels.length - 1) {
+                    setState(() => selectedChannelIndex++);
+                    _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                    _scrollToCurrentChannel();
+                  }
+                } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  setState(() => focusColumn = 'category');
+                } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  if (selectedChannelIndex == 0) {
+                    setState(() => focusColumn = 'logout');
+                  } else {
+                    setState(() => selectedChannelIndex--);
+                    _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                    _scrollToCurrentChannel();
+                  }
+                } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  setState(() => focusColumn = 'preview');
+                } else if (event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.select) {
+                  _selectChannel(channels[selectedChannelIndex]);
                 }
-              } else if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
-                  event.logicalKey == LogicalKeyboardKey.enter ||
-                  event.logicalKey == LogicalKeyboardKey.select) {
-                if (channels.isNotEmpty) {
+              } else if (focusColumn == 'preview') {
+                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
                   setState(() => focusColumn = 'channel');
-                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
+                } else if (event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.select) {
+                  if (previewChannel != null) {
+                    _selectChannel(previewChannel!);
+                  }
                 }
-              }
-            } else if (focusColumn == 'channel') {
-              if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-                if (selectedChannelIndex < channels.length - 1) {
-                  setState(() => selectedChannelIndex++);
-                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
-                  _scrollToCurrentChannel();
-                }
-              } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
-                if (selectedChannelIndex > 0) {
-                  setState(() => selectedChannelIndex--);
-                  _debouncedPreviewUpdate(channels[selectedChannelIndex]);
-                  _scrollToCurrentChannel();
-                }
-              } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-                setState(() => focusColumn = 'category');
-              } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-                setState(() => focusColumn = 'preview');
-              } else if (event.logicalKey == LogicalKeyboardKey.enter ||
-                  event.logicalKey == LogicalKeyboardKey.select) {
-                _selectChannel(channels[selectedChannelIndex]);
-              }
-            } else if (focusColumn == 'preview') {
-              if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-                setState(() => focusColumn = 'channel');
-              } else if (event.logicalKey == LogicalKeyboardKey.enter ||
-                  event.logicalKey == LogicalKeyboardKey.select) {
-                if (previewChannel != null) {
-                  _selectChannel(previewChannel!);
+              } else if (focusColumn == 'logout') {
+                if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  setState(() => focusColumn = 'category');
+                } else if (event.logicalKey == LogicalKeyboardKey.enter ||
+                    event.logicalKey == LogicalKeyboardKey.select) {
+                  _showLogoutDialog(context);
                 }
               }
             }
-          }
-        },
-        child: Scaffold(
-          backgroundColor: const Color(0xFF0F172A),
-          body: Shortcuts(
-            shortcuts: <LogicalKeySet, Intent>{
-              LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
-              LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
-            },
-            child: SafeArea(
-              child: Column(
-                children: [
-                  _header(timeStr, headerHeight, scale),
-                  Expanded(
-                    child: Row(
-                      children: [
-                        _buildCategoryColumn(),
-                        _buildChannelColumn(),
-                        _buildPreviewColumn(),
-                      ],
+          },
+          child: Scaffold(
+            backgroundColor: const Color(0xFF0F172A),
+            body: Shortcuts(
+              shortcuts: <LogicalKeySet, Intent>{
+                LogicalKeySet(LogicalKeyboardKey.select):
+                    const ActivateIntent(),
+                LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+              },
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _header(timeStr, headerHeight, scale),
+                    Expanded(
+                      child: Row(
+                        children: [
+                          _buildCategoryColumn(),
+                          _buildChannelColumn(),
+                          _buildPreviewColumn(),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
           ),
         ),
       ),
@@ -371,13 +388,15 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
       flex: 2,
       child: Container(
         decoration: BoxDecoration(
-          color: isFocusedColumn
-              ? Colors.blueAccent.withOpacity(0.05)
-              : Colors.black.withOpacity(0.2),
+          color:
+              isFocusedColumn
+                  ? Colors.blueAccent.withOpacity(0.05)
+                  : Colors.black.withOpacity(0.2),
           border: Border(
-            left: isFocusedColumn
-                ? const BorderSide(color: Colors.blueAccent, width: 4)
-                : const BorderSide(color: Colors.transparent, width: 4),
+            left:
+                isFocusedColumn
+                    ? const BorderSide(color: Colors.blueAccent, width: 4)
+                    : const BorderSide(color: Colors.transparent, width: 4),
             right: BorderSide(color: Colors.white.withOpacity(0.05)),
           ),
         ),
@@ -398,28 +417,28 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: isFocused
-                      ? [
-                          BoxShadow(
-                            color: Colors.blueAccent.withOpacity(0.5),
-                            blurRadius: 15,
-                            spreadRadius: 2,
-                          ),
-                        ]
-                      : [],
-                  gradient: isFocused
-                      ? const LinearGradient(
-                          colors: [
-                            Color(0xFF2563EB),
-                            Color(0xFF3B82F6),
-                          ],
-                        )
-                      : null,
-                  color: isFocused
-                      ? null
-                      : (isSelected
-                          ? Colors.white.withOpacity(0.15)
-                          : Colors.transparent),
+                  boxShadow:
+                      isFocused
+                          ? [
+                            BoxShadow(
+                              color: Colors.blueAccent.withOpacity(0.5),
+                              blurRadius: 15,
+                              spreadRadius: 2,
+                            ),
+                          ]
+                          : [],
+                  gradient:
+                      isFocused
+                          ? const LinearGradient(
+                            colors: [Color(0xFF2563EB), Color(0xFF3B82F6)],
+                          )
+                          : null,
+                  color:
+                      isFocused
+                          ? null
+                          : (isSelected
+                              ? Colors.white.withOpacity(0.15)
+                              : Colors.transparent),
                 ),
                 alignment: Alignment.centerLeft,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -427,12 +446,8 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                   cat.name,
                   maxLines: 1,
                   style: TextStyle(
-                    color: isFocused
-                        ? Colors.white
-                        : Colors.white60,
-                    fontWeight: isFocused
-                        ? FontWeight.bold
-                        : FontWeight.normal,
+                    color: isFocused ? Colors.white : Colors.white60,
+                    fontWeight: isFocused ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
               ),
@@ -449,13 +464,15 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
       flex: 3,
       child: Container(
         decoration: BoxDecoration(
-          color: isFocusedColumn
-              ? Colors.blueAccent.withOpacity(0.05)
-              : Colors.black.withOpacity(0.1),
+          color:
+              isFocusedColumn
+                  ? Colors.blueAccent.withOpacity(0.05)
+                  : Colors.black.withOpacity(0.1),
           border: Border(
-            bottom: isFocusedColumn
-                ? const BorderSide(color: Colors.blueAccent, width: 4)
-                : const BorderSide(color: Colors.transparent, width: 4),
+            bottom:
+                isFocusedColumn
+                    ? const BorderSide(color: Colors.blueAccent, width: 4)
+                    : const BorderSide(color: Colors.transparent, width: 4),
             right: BorderSide(color: Colors.white.withOpacity(0.05)),
           ),
         ),
@@ -476,28 +493,28 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(15),
-                  boxShadow: isFocused
-                      ? [
-                          BoxShadow(
-                            color: Colors.blueAccent.withOpacity(0.6),
-                            blurRadius: 20,
-                            spreadRadius: 3,
-                          ),
-                        ]
-                      : [],
-                  gradient: isFocused
-                      ? const LinearGradient(
-                          colors: [
-                            Color(0xFF2563EB),
-                            Color(0xFF3B82F6),
-                          ],
-                        )
-                      : null,
-                  color: isFocused
-                      ? null
-                      : (isSelected
-                          ? Colors.white.withOpacity(0.15)
-                          : Colors.transparent),
+                  boxShadow:
+                      isFocused
+                          ? [
+                            BoxShadow(
+                              color: Colors.blueAccent.withOpacity(0.6),
+                              blurRadius: 20,
+                              spreadRadius: 3,
+                            ),
+                          ]
+                          : [],
+                  gradient:
+                      isFocused
+                          ? const LinearGradient(
+                            colors: [Color(0xFF2563EB), Color(0xFF3B82F6)],
+                          )
+                          : null,
+                  color:
+                      isFocused
+                          ? null
+                          : (isSelected
+                              ? Colors.white.withOpacity(0.15)
+                              : Colors.transparent),
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(
@@ -509,21 +526,20 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                         color: Colors.black26,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: ch.logoUrl.isNotEmpty
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image.network(
-                                ch.logoUrl,
-                                errorBuilder: (_, __, ___) => const Icon(
-                                  Icons.tv,
-                                  color: Colors.white24,
+                      child:
+                          ch.logoUrl.isNotEmpty
+                              ? ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  ch.logoUrl,
+                                  errorBuilder:
+                                      (_, __, ___) => const Icon(
+                                        Icons.tv,
+                                        color: Colors.white24,
+                                      ),
                                 ),
-                              ),
-                            )
-                          : const Icon(
-                              Icons.tv,
-                              color: Colors.white24,
-                            ),
+                              )
+                              : const Icon(Icons.tv, color: Colors.white24),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -537,15 +553,17 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                             style: TextStyle(
                               color: isFocused ? Colors.white : Colors.white60,
                               fontSize: 16,
-                              fontWeight: isFocused
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
+                              fontWeight:
+                                  isFocused
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
                             ),
                           ),
                           Text(
                             "CH ${ch.channelNumber}",
                             style: TextStyle(
-                              color: isFocused ? Colors.white70 : Colors.white38,
+                              color:
+                                  isFocused ? Colors.white70 : Colors.white38,
                               fontSize: 12,
                             ),
                           ),
@@ -581,15 +599,16 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                     color: isFocusedColumn ? Colors.blueAccent : Colors.white10,
                     width: isFocusedColumn ? 3.0 : 1.0,
                   ),
-                  boxShadow: isFocusedColumn
-                      ? [
-                          BoxShadow(
-                            color: Colors.blueAccent.withOpacity(0.5),
-                            blurRadius: 20,
-                            spreadRadius: 4,
-                          ),
-                        ]
-                      : [],
+                  boxShadow:
+                      isFocusedColumn
+                          ? [
+                            BoxShadow(
+                              color: Colors.blueAccent.withOpacity(0.5),
+                              blurRadius: 20,
+                              spreadRadius: 4,
+                            ),
+                          ]
+                          : [],
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
@@ -608,42 +627,125 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: previewChannel == null
-                    ? const SizedBox()
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            previewChannel!.name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
+                child:
+                    previewChannel == null
+                        ? const SizedBox()
+                        : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              previewChannel!.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            "Channel ${previewChannel!.channelNumber} • ${previewChannel!.language} • ${previewChannel!.quality}",
-                            style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 16,
+                            const SizedBox(height: 8),
+                            Text(
+                              "Channel ${previewChannel!.channelNumber} • ${previewChannel!.language} • ${previewChannel!.quality}",
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 16,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 24),
-                          const Text(
-                            "EPG Information would be displayed here for the current program.",
-                            style: TextStyle(
-                              color: Colors.white60,
-                              fontSize: 16,
+                            const SizedBox(height: 24),
+                            const Text(
+                              "EPG Information would be displayed here for the current program.",
+                              style: TextStyle(
+                                color: Colors.white60,
+                                fontSize: 16,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
+                          ],
+                        ),
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            width: 400,
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.logout, color: Colors.blueAccent, size: 48),
+                const SizedBox(height: 24),
+                const Text(
+                  "Logout",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Are you sure you want to log out?",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white60, fontSize: 16),
+                ),
+                const SizedBox(height: 32),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          "Cancel",
+                          style: TextStyle(color: Colors.white60),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          context.read<LoginBloc>().add(LogoutRequested());
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          "Logout",
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -679,6 +781,47 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                   color: Colors.white70,
                   fontSize: 18,
                   fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(width: 32),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color:
+                      focusColumn == 'logout'
+                          ? Colors.blueAccent
+                          : Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color:
+                        focusColumn == 'logout'
+                            ? Colors.white
+                            : Colors.transparent,
+                    width: 2,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.logout,
+                      color:
+                          focusColumn == 'logout' ? Colors.white : Colors.white60,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      "Logout",
+                      style: TextStyle(
+                        color:
+                            focusColumn == 'logout' ? Colors.white : Colors.white60,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
