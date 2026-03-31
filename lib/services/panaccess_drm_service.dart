@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 class PanDrmService {
   static const MethodChannel _channel = MethodChannel("xeranet_drm");
   static Completer<void>? _loginCompleter;
+  static bool _isLicenseActivated = false;
 
   static void initialize() {
     _channel.setMethodCallHandler((call) async {
@@ -36,6 +37,16 @@ class PanDrmService {
     } catch (e) {
       debugPrint("DRM Init Error: $e");
       rethrow;
+    }
+  }
+
+  /// RELEASE DRM
+  static Future<void> releaseDrm() async {
+    try {
+      final result = await _channel.invokeMethod("releaseDrm");
+      debugPrint("DRM Released: $result");
+    } catch (e) {
+      debugPrint("DRM Release Error: $e");
     }
   }
 
@@ -151,19 +162,48 @@ class PanDrmService {
 
   /// GET STREAMING LICENSES
   static Future<List<dynamic>> getStreamingLicenses() async {
-    final response = await callCasFunction("getStreamingLicenses", {});
-    if (response == null) return [];
     try {
+      final response = await callCasFunction("getStreamingLicenses", {});
+      if (response == null) return [];
       final decoded = jsonDecode(response);
-      return decoded["answer"] ??
-          decoded["return"] ??
-          decoded["licenses"] ??
-          [];
+      return decoded["answer"] ?? decoded["return"] ?? decoded["licenses"] ?? [];
     } catch (e) {
-      debugPrint("Error parsing Streaming Licenses: $e");
+      if (e is PlatformException && e.code.contains("activation_cooldown")) {
+        debugPrint("License activation on cooldown, skipping...");
+      } else if (e is! PlatformException) {
+        debugPrint("Error parsing Streaming Licenses: $e");
+      }
       return [];
     }
   }
+
+  /// RESTORE/ENSURE LICENSE IS ACTIVE (Call once per session)
+  static Future<void> ensureLicense() async {
+    if (_isLicenseActivated) return;
+
+    try {
+      final licenses = await getStreamingLicenses();
+      if (licenses.isNotEmpty) {
+        final firstLicense = licenses[0] as Map;
+        // Check if license is already marked as active in response if possible
+        // Otherwise attempt activation
+        final key = firstLicense["key"]?.toString() ?? firstLicense["licenseKey"]?.toString();
+        if (key != null) {
+          await setStreamingLicense(key, "1111");
+          _isLicenseActivated = true;
+          debugPrint("PanDrmService: License activated successfully.");
+        }
+      }
+    } catch (e) {
+      debugPrint("ensureLicense Error: $e");
+      // If it fails due to cooldown, we still mark as activated to stop retrying
+      if (e is PlatformException && e.code.contains("activation_cooldown")) {
+        _isSessionActive = true; 
+      }
+    }
+  }
+
+  static bool _isSessionActive = false; // Internal helper for state tracking
 
   /// SET STREAMING LICENSE
   static Future<void> setStreamingLicense(String licenseKey, String pin) async {
@@ -176,52 +216,50 @@ class PanDrmService {
 
   /// GET CLIENT CONFIG
   static Future<Map<String, dynamic>> getClientConfig() async {
-    final response = await callCasFunction("getClientConfig", {});
-    if (response == null) return {};
     try {
-      return jsonDecode(response);
+      final response = await callCasFunction("getClientConfig", {});
+      if (response == null) return {};
+      return jsonDecode(response) as Map<String, dynamic>;
     } catch (e) {
-      debugPrint("Error parsing Client Config: $e");
+      if (e is! PlatformException) debugPrint("Error parsing Client Config: $e");
       return {};
     }
   }
 
   /// GET AVAILABLE STREAMS
   static Future<List<dynamic>> getAvailableStreams() async {
-    final response = await callCasFunction("getAvailableStreams", {});
-    if (response == null) return [];
     try {
+      final response = await callCasFunction("getAvailableStreams", {});
+      if (response == null) return [];
       final decoded = jsonDecode(response);
       return decoded["answer"] ?? decoded["return"] ?? decoded["streams"] ?? [];
     } catch (e) {
-      debugPrint("Error parsing Available Streams: $e");
+      // Silence platform permission errors to keep logs clean
+      if (e is! PlatformException) debugPrint("Error parsing Available Streams: $e");
       return [];
     }
   }
 
-  /// GET BOUQUETS
+  /// GET BOUQUETS (Optimized parallel check)
   static Future<List<dynamic>> getBouquets() async {
     final List<String> candidateFunctions = ["cvGetBouquets", "getBouquets"];
-    for (var fn in candidateFunctions) {
+    
+    // Try both candidates simultaneously
+    final results = await Future.wait(candidateFunctions.map((fn) async {
       try {
         final response = await callCasFunction(fn, {});
-        print("Bouquets response from $fn: $response");
-        if (response == null) continue;
+        if (response == null) return <dynamic>[];
         final decoded = jsonDecode(response);
-        print("PanDrmService: Decoded Bouquets from $fn: $decoded");
-        final bouquets =
-            decoded["return"] ?? decoded["bouquets"] ?? decoded["answer"] ?? [];
-        if (bouquets is List) {
-          return bouquets;
-        }
+        final bouquets = decoded["return"] ?? decoded["bouquets"] ?? decoded["answer"];
+        return bouquets is List ? bouquets : <dynamic>[];
       } catch (e) {
-        print("Get Bouquets error for $fn: $e");
-        if (e is PlatformException) {
-          if (e.code == 'no_access_to_function' || e.code == 'BOUQUETS_ERROR') {
-            continue; // try next function name
-          }
-        }
+        return <dynamic>[];
       }
+    }));
+
+    // Return the first one that produced a non-empty list
+    for (var list in results) {
+      if (list != null && list is List && list.isNotEmpty) return list;
     }
     return [];
   }

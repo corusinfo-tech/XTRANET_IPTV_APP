@@ -9,6 +9,8 @@ import 'login_event.dart';
 import 'login_state.dart';
 
 class LoginBloc extends Bloc<LoginEvent, LoginState> {
+  bool _isSessionActive = false;
+
   LoginBloc() : super(LoginInitial()) {
     on<CheckSavedCredentials>(_onCheckSavedCredentials);
     on<LoginSubmitted>(_onLoginSubmitted);
@@ -26,70 +28,91 @@ class LoginBloc extends Bloc<LoginEvent, LoginState> {
       final password = prefs.getString('saved_password');
 
       if (username != null && password != null) {
-        
-        // 1. Silent DRM Login to explicitly validate session prior to ANY data/cache actions
-        await PanDrmService.login(username, password);
-        
-        // 2. Refresh Licenses & Config sequentially
-        final licenses = await PanDrmService.getStreamingLicenses().catchError((_) => <dynamic>[]);
-        String? activeLicenseKey;
-        if (licenses.isNotEmpty) {
-          final firstLicense = licenses[0] as Map;
-          activeLicenseKey = firstLicense["key"]?.toString() ??
-              firstLicense["licenseKey"]?.toString() ??
-              firstLicense["smartcard"]?.toString() ??
-              firstLicense["license"]?.toString();
-        }
-
-        if (activeLicenseKey != null && activeLicenseKey.isNotEmpty) {
-          await PanDrmService.setStreamingLicense(activeLicenseKey, "1111");
-        }
-
-        await PanDrmService.getClientConfig().catchError((_) => <String, dynamic>{});
-        
-        // Let DRM library stabilize internal keys briefly 
-        await Future.delayed(const Duration(milliseconds: 1500));
-
-        // 3. Inspect Local Cache 
+        // 1. Inspect Local Cache FIRST
         final hasCache = await DiscoveryService().loadFromCache();
 
         if (hasCache) {
-          // If valid cache is mapped, navigate user IMMEDIATELY 
+          // 🚀 INSTANT UI: Navigate immediately using cached data
           emit(const LoginSuccess(streamUrl: "use_cache"));
           
-          // Emit Loading state to trigger background UI spinners for Data refresh 
-          emit(LoginDataLoading());
-          
-          try {
-             await DiscoveryService().discoverAllContentSilently();
-             // Emit fresh state so UI rehydrates updated streams 
-             emit(LoginDataLoaded());
-          } catch(e) {
-             debugPrint("Background silent refresh failed: $e");
-             // On background failure, keep Cache state intact, don't crash the active UI. 
-          }
-
+          // Background: Silently refresh session and data
+          _backgroundRefresh(username, password, emit);
         } else {
-          // No cache available: block UI and load fresh from Network 
-          await DiscoveryService().discoverAllContent();
-          
-          final streamUrl = DiscoveryService().selectedStreamUrl;
-          final streamId = DiscoveryService().selectedStreamId;
-          final url = await PanDrmService.getStreamUrl(streamUrl ?? streamId);
-          
-          if (url != null && url.isNotEmpty) {
-            emit(LoginSuccess(streamUrl: url));
-          } else {
-            add(LogoutRequested());
-          }
+          // No cache: Minimal login to get streams, then go to UI
+          await _performInitialLogin(username, password, emit);
         }
       } else {
         emit(LoginInitial());
       }
     } catch (e) {
-      debugPrint("Silent auto-login session validation failed: $e");
-      // Force Login screen redirect on Expired / Invalidated Session 
+      debugPrint("Silent auto-login failed: $e");
       add(LogoutRequested());
+    }
+  }
+
+  Future<void> _backgroundRefresh(String username, String password, Emitter<LoginState> emit) async {
+    if (_isSessionActive) return; // Prevent multiple refreshes
+    try {
+      await PanDrmService.initDrm();
+      await PanDrmService.login(username, password);
+      _isSessionActive = true;
+      await DiscoveryService().discoverAllContentSilently();
+      emit(LoginDataLoaded());
+    } catch (e) {
+      debugPrint("Background refresh failed: $e");
+      _isSessionActive = false;
+    }
+  }
+
+  Future<void> _performInitialLogin(String username, String password, Emitter<LoginState> emit, {bool isFresh = false}) async {
+    if (!_isSessionActive) {
+      // 1. Initialise DRM and login
+      await PanDrmService.initDrm();
+      await PanDrmService.login(username, password);
+      _isSessionActive = true;
+    }
+
+    if (isFresh) {
+      // 2. FRESH LOGIN: Setup licenses and config (MANDATORY)
+      await Future.wait([
+        _setupLicenses(),
+        PanDrmService.getClientConfig().catchError((_) => <String, dynamic>{}),
+      ]);
+    }
+
+    // 3. Fetch basic content
+    await DiscoveryService().discoverAllContent();
+    
+    // 4. Debug Check: If no streams, try license setup as a last resort fallback
+    if (DiscoveryService().streams.isEmpty && !isFresh) {
+       debugPrint("⚠️ No streams found with cached session - forcing full refresh");
+       await _setupLicenses();
+       await DiscoveryService().discoverAllContent();
+    }
+    
+    final streamUrl = DiscoveryService().selectedStreamUrl;
+    final streamId = DiscoveryService().selectedStreamId;
+    
+    if (DiscoveryService().streams.isNotEmpty) {
+      emit(LoginSuccess(streamUrl: streamUrl ?? streamId ?? ""));
+      emit(LoginDataLoaded());
+    } else {
+      add(LogoutRequested());
+    }
+  }
+
+  Future<void> _performFullLogin(String username, String password, Emitter<LoginState> emit) async {
+    await _performInitialLogin(username, password, emit, isFresh: true);
+  }
+
+  Future<void> _setupLicenses() async {
+    final licenses = await PanDrmService.getStreamingLicenses();
+    if (licenses.isNotEmpty) {
+      final firstLicense = licenses[0] as Map;
+      final key = firstLicense["key"]?.toString() ?? firstLicense["licenseKey"]?.toString();
+      if (key != null) {
+        await PanDrmService.setStreamingLicense(key, "1111");
+      }
     }
   }
 
@@ -99,45 +122,12 @@ class LoginBloc extends Bloc<LoginEvent, LoginState> {
   ) async {
     emit(LoginLoading());
     try {
-      await PanDrmService.initDrm();
-      await PanDrmService.setManagementServer("https://cv01.panaccess.com");
-
-      // Validate manually 
-      await PanDrmService.login(event.username, event.password);
-
-      final licenses = await PanDrmService.getStreamingLicenses().catchError((_) => <dynamic>[]);
-      String? activeLicenseKey;
-      if (licenses.isNotEmpty) {
-        final firstLicense = licenses[0] as Map;
-        activeLicenseKey = firstLicense["key"]?.toString() ??
-            firstLicense["licenseKey"]?.toString() ??
-            firstLicense["smartcard"]?.toString() ??
-            firstLicense["license"]?.toString();
-      }
-
-      if (activeLicenseKey != null && activeLicenseKey.isNotEmpty) {
-        await PanDrmService.setStreamingLicense(activeLicenseKey, "1111");
-      }
-
-      await PanDrmService.getClientConfig().catchError((_) => <String, dynamic>{});
-      await Future.delayed(const Duration(milliseconds: 1500));
-
-      // Force Discovery synchronously 
-      await DiscoveryService().discoverAllContent();
-
-      final streamUrl = DiscoveryService().selectedStreamUrl;
-      final streamId = DiscoveryService().selectedStreamId;
-      final url = await PanDrmService.getStreamUrl(streamUrl ?? streamId);
-
-      if (url != null && url.isNotEmpty) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('saved_username', event.username);
-        await prefs.setString('saved_password', event.password);
-        emit(LoginSuccess(streamUrl: url));
-        emit(LoginDataLoaded()); // Data is fresh
-      } else {
-        emit(const LoginFailure(error: "Could not retrieve stream URL"));
-      }
+      // For manual login, we always reset session status to ensure fresh login
+      _isSessionActive = false;
+      await _performFullLogin(event.username, event.password, emit);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_username', event.username);
+      await prefs.setString('saved_password', event.password);
     } catch (e) {
       emit(LoginFailure(error: e.toString()));
     }
@@ -147,6 +137,14 @@ class LoginBloc extends Bloc<LoginEvent, LoginState> {
     LogoutRequested event,
     Emitter<LoginState> emit,
   ) async {
+    _isSessionActive = false; // Reset session status on logout
+    
+    try {
+      await PanDrmService.releaseDrm();
+    } catch(e) {
+      debugPrint("DRM Release during logout failed: $e");
+    }
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('saved_username');
     await prefs.remove('saved_password');

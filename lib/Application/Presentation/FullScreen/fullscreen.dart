@@ -40,6 +40,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
   late String _currentStreamUrl;
   int _zapCounter = 0;
   int _playerKeyCounter = 0;
+  bool _isSwitching = false;
 
   @override
   void initState() {
@@ -81,6 +82,12 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
   }
 
   Future<String?> getDrmStreamUrl(String rawUrl) async {
+    // Optimized: Only setup licenses if they haven't been activated yet
+    try {
+      await PanDrmService.ensureLicense();
+    } catch(e) {
+      debugPrint("Lazy License Setup Error: $e");
+    }
     return await PanDrmService.getStreamUrl(rawUrl);
   }
 
@@ -167,6 +174,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
               );
               if (result != null && result.id != _currentChannel.id) {
                 setState(() {
+                  _isSwitching = true;
                   _playerKeyCounter++;
                 });
                 await _playChannel(result);
@@ -174,10 +182,14 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 // MenuScreen's video preview steals the ExoPlayer decoder.
                 // We must force the FullScreen player to reconnect when returning.
                 setState(() {
+                  _isSwitching = true;
                   _playerKeyCounter++;
                 });
                 await _playChannel(_currentChannel);
               }
+              // Brief delay to allow the old native surface to fully dispose
+              await Future.delayed(const Duration(milliseconds: 50));
+              if (mounted) setState(() => _isSwitching = false);
             } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
               _zapChannel(1);
             } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
@@ -190,14 +202,16 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
           body: Stack(
             children: [
               Positioned.fill(
-                child: AndroidView(
-                  key: ValueKey(_playerKeyCounter),
-                  viewType: 'native_video_player',
-                  layoutDirection: TextDirection.ltr,
-                  creationParams: {"streamUrl": _currentStreamUrl},
-                  creationParamsCodec: const StandardMessageCodec(),
-                  onPlatformViewCreated: _onPlatformViewCreated,
-                ),
+                child: _isSwitching
+                    ? Container(color: Colors.black)
+                    : AndroidView(
+                        key: ValueKey(_playerKeyCounter),
+                        viewType: 'native_video_player',
+                        layoutDirection: TextDirection.ltr,
+                        creationParams: {"streamUrl": _currentStreamUrl},
+                        creationParamsCodec: const StandardMessageCodec(),
+                        onPlatformViewCreated: _onPlatformViewCreated,
+                      ),
               ),
 
               // Watermark Logo

@@ -54,13 +54,8 @@ class _SplashScreenState extends State<SplashScreen>
       }
     });
 
-    try {
-      await PanDrmService.initDrm();
-      await PanDrmService.setManagementServer("https://cv01.panaccess.com");
-    } catch (e) {
-      debugPrint("DRM Init Failed: $e");
-    }
-
+    // The LoginBloc now handles all DRM and Content initialization
+    // inside CheckSavedCredentials based on cache.
     if (mounted) {
       context.read<LoginBloc>().add(CheckSavedCredentials());
     }
