@@ -39,6 +39,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
   late Channel _currentChannel;
   late String _currentStreamUrl;
   int _zapCounter = 0;
+  int _playerKeyCounter = 0;
 
   @override
   void initState() {
@@ -165,7 +166,13 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 ),
               );
               if (result != null && result.id != _currentChannel.id) {
+                setState(() { _playerKeyCounter++; });
                 await _playChannel(result);
+              } else {
+                // MenuScreen's video preview steals the ExoPlayer decoder.
+                // We must force the FullScreen player to reconnect when returning.
+                setState(() { _playerKeyCounter++; });
+                await _playChannel(_currentChannel);
               }
             } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
               _zapChannel(1);
@@ -180,11 +187,27 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
             children: [
               Positioned.fill(
                 child: AndroidView(
+                  key: ValueKey(_playerKeyCounter),
                   viewType: 'native_video_player',
                   layoutDirection: TextDirection.ltr,
                   creationParams: {"streamUrl": _currentStreamUrl},
                   creationParamsCodec: const StandardMessageCodec(),
                   onPlatformViewCreated: _onPlatformViewCreated,
+                ),
+              ),
+
+              // Watermark Logo
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Center(
+                    child: Opacity(
+                      opacity: 0.2,
+                      child: Image.asset(
+                        'asset/images/Zentryx logo.png',
+                        width: 300,
+                      ),
+                    ),
+                  ),
                 ),
               ),
 
@@ -194,42 +217,43 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 left: 40,
                 child: FadeTransition(
                   opacity: _fade!,
-                  child: Row(
-                    children: [
-                      Container(
-                        height: 60,
-                        width: 60,
-                        decoration: BoxDecoration(
-                          color: Colors.white10,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child:
-                            _currentChannel.logoUrl.isNotEmpty
-                                ? ClipRRect(
-                                  borderRadius: BorderRadius.circular(20),
-                                  child: Image.network(
-                                    _currentChannel.logoUrl,
-                                    fit: BoxFit.cover,
-                                    errorBuilder:
-                                        (_, __, ___) => const Icon(
-                                          Icons.tv,
-                                          color: Colors.white24,
-                                        ),
-                                  ),
-                                )
-                                : const Icon(Icons.tv, color: Colors.white24),
-                      ),
-                      const SizedBox(width: 20),
-                      Text(
-                        _currentChannel.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 25,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: const SizedBox.shrink(),
+                  //  Row(
+                  //   children: [
+                  //     Container(
+                  //       height: 60,
+                  //       width: 60,
+                  //       decoration: BoxDecoration(
+                  //         color: Colors.white10,
+                  //         borderRadius: BorderRadius.circular(20),
+                  //       ),
+                  //       child:
+                  //           _currentChannel.logoUrl.isNotEmpty
+                  //               ? ClipRRect(
+                  //                 borderRadius: BorderRadius.circular(20),
+                  //                 child: Image.network(
+                  //                   _currentChannel.logoUrl,
+                  //                   fit: BoxFit.cover,
+                  //                   errorBuilder:
+                  //                       (_, __, ___) => const Icon(
+                  //                         Icons.tv,
+                  //                         color: Colors.white24,
+                  //                       ),
+                  //                 ),
+                  //               )
+                  //               : const Icon(Icons.tv, color: Colors.white24),
+                  //     ),
+                  //     const SizedBox(width: 20),
+                  //     Text(
+                  //       _currentChannel.name,
+                  //       style: const TextStyle(
+                  //         color: Colors.white,
+                  //         fontSize: 25,
+                  //         fontWeight: FontWeight.w600,
+                  //       ),
+                  //     ),
+                  //   ],
+                  // ),
                 ),
               ),
 
