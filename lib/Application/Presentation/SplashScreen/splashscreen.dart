@@ -180,7 +180,7 @@ class _SplashScreenState extends State<SplashScreen>
               shape: BoxShape.circle,
             ),
             child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 120, sigmaY: 120),
+              filter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
               child: Container(color: Colors.transparent),
             ),
           );

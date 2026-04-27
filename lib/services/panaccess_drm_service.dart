@@ -189,7 +189,12 @@ class PanDrmService {
         // Otherwise attempt activation
         final key = firstLicense["key"]?.toString() ?? firstLicense["licenseKey"]?.toString();
         if (key != null) {
-          await setStreamingLicense(key, "1111");
+          try {
+            await setStreamingLicense(key, "1111");
+          } catch (e) {
+            debugPrint("PIN 1111 failed, trying 0000...");
+            await setStreamingLicense(key, "0000");
+          }
           _isLicenseActivated = true;
           debugPrint("PanDrmService: License activated successfully.");
         }

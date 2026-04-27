@@ -31,28 +31,38 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
         )
     }
     private var player: ExoPlayer
-    private val methodChannel: MethodChannel
+    private val methodChannel: MethodChannel = MethodChannel(messenger, "native_video_player_${id}")
     private var usePanExtractor: Boolean = true
     private var currentUrl: String? = null
+    private var retryCount = 0
+    private val maxRetries = 3
+    private val bufferingHandler = Handler(Looper.getMainLooper())
+    private val bufferingTimeout = Runnable {
+        android.util.Log.w("NativePlayerView", "Buffering timeout reached (15s) — triggering auto-retry")
+        if (retryCount < maxRetries) {
+            retryCount++
+            currentUrl?.let { preparePlayer(it) }
+        } else {
+            methodChannel.invokeMethod("onPlayerError", mapOf("message" to "Stream timed out while buffering"))
+        }
+    }
     
     init {
         android.util.Log.d("NativePlayerView", "Initializing NativePlayerView (id=$id)")
-        // Setup MethodChannel for remote control event forwarding
-        methodChannel = MethodChannel(messenger, "native_video_player_${id}")
         
         // Enhanced Player initialization with Optimized LoadControl (Addressing Buffering Issues)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                25000, // min buffer (25 seconds) - Increased for better stability
+                15000, // min buffer (15 seconds) - Optimized for faster allocation
                 60000, // max buffer (60 seconds)
-                3000,  // buffer for playback (3 seconds) - Increased to prevent early buffering
-                5000   // buffer for resume
+                1000,  // buffer for playback (1.0 second) - Near-instant start
+                1500   // buffer for resume
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
             
         val renderersFactory = DefaultRenderersFactory(context)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
 
         player = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
@@ -79,6 +89,7 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
                 "changeStream" -> {
                     val url = call.argument<String>("streamUrl")
                     if (url != null) {
+                        retryCount = 0 // Reset retry count on manual change
                         preparePlayer(url)
                         result.success(null)
                     } else {
@@ -115,10 +126,20 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
         // Add Listener for debugging playback issues
         player.addListener(object : androidx.media3.common.Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
+                // Cancel any pending buffering timeout
+                bufferingHandler.removeCallbacks(bufferingTimeout)
+                
                 val stateString = when (state) {
                     androidx.media3.common.Player.STATE_IDLE -> "IDLE"
-                    androidx.media3.common.Player.STATE_BUFFERING -> "BUFFERING"
-                    androidx.media3.common.Player.STATE_READY -> "READY"
+                    androidx.media3.common.Player.STATE_BUFFERING -> {
+                        // Start a 15-second watchdog for buffering
+                        bufferingHandler.postDelayed(bufferingTimeout, 15000)
+                        "BUFFERING"
+                    }
+                    androidx.media3.common.Player.STATE_READY -> {
+                        retryCount = 0 // Reset retry count on success
+                        "READY"
+                    }
                     androidx.media3.common.Player.STATE_ENDED -> "ENDED"
                     else -> "UNKNOWN"
                 }
@@ -131,12 +152,21 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                android.util.Log.e("NativePlayerView", "Player error: ${error.message}", error)
-                Handler(Looper.getMainLooper()).post {
-                    methodChannel.invokeMethod(
-                        "onPlayerError",
-                        mapOf("message" to (error.message ?: "Stream unavailable"))
-                    )
+                android.util.Log.e("NativePlayerView", "Player error (retry $retryCount/$maxRetries): ${error.message}", error)
+                
+                if (retryCount < maxRetries) {
+                    retryCount++
+                    android.util.Log.i("NativePlayerView", "Auto-retrying playback in 2000ms...")
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        currentUrl?.let { preparePlayer(it) }
+                    }, 2000)
+                } else {
+                    Handler(Looper.getMainLooper()).post {
+                        methodChannel.invokeMethod(
+                            "onPlayerError",
+                            mapOf("message" to (error.message ?: "Stream unavailable after retries"))
+                        )
+                    }
                 }
             }
         })
@@ -149,7 +179,10 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
     }
 
     private fun preparePlayer(url: String) {
-        if (url.isEmpty()) return
+        if (url.isEmpty() || url == "use_cache") {
+            android.util.Log.d("NativePlayerView", "preparePlayer: Skipping invalid/placeholder URL: $url")
+            return
+        }
         
         if (url == currentUrl && player.playbackState != androidx.media3.common.Player.STATE_IDLE) {
             android.util.Log.i("NativePlayerView", "Ignoring duplicate prepare for: $url")
@@ -183,8 +216,15 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
             ))
         }
 
+        // WAIT FOR SESSION ID: Encryption requires a valid session.
         if (sessionId.isEmpty() || sessionId == "NULL") {
-            android.util.Log.w("NativePlayerView", "Session ID is empty, but proceeding with prepare anyway...")
+            android.util.Log.w("NativePlayerView", "Session ID missing — retrying prepare in 200ms...")
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (currentUrl == url) {
+                    preparePlayer(url)
+                }
+            }, 200)
+            return
         }
 
         if (!drmInst.isPersonalized) {
@@ -239,6 +279,7 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
     }
 
     override fun dispose() {
+        bufferingHandler.removeCallbacks(bufferingTimeout)
         methodChannel.setMethodCallHandler(null)
         player.release()
     }

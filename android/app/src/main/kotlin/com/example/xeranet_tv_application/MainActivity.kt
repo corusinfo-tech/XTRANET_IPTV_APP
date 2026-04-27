@@ -43,7 +43,7 @@ class MainActivity: FlutterActivity() {
 
                 "initDrm" -> {
                     val company = call.argument<String>("company") ?: "RCUBE"
-                    val brand = call.argument<String>("brand") ?: "Generic"
+                    val brand = call.argument<String>("brand") ?: android.os.Build.BRAND
                     val appVersion = call.argument<String>("appVersion") ?: "1.0.0r"
                     val osVersion = call.argument<String>("osVersion") ?: "Android12"
                     val hint = call.argument<Int>("hint") ?: 0
@@ -157,10 +157,10 @@ class MainActivity: FlutterActivity() {
 
                             var url = resolveUrl(urlParam)
 
-                            // RETRY: If session is null or resolution failed, wait 1s and try again (handling slow startup)
+                            // RETRY: If session is null or resolution failed, wait 300ms and try again (Optimized for instant playback)
                             if (url == null && sessionId == "NONE") {
-                                Log.w(TAG, "Session is NONE, waiting 1500ms for stabilization...")
-                                Thread.sleep(1500)
+                                Log.w(TAG, "Session is NONE, waiting 300ms for stabilization...")
+                                Thread.sleep(300)
                                 url = resolveUrl(urlParam)
                             }
                             
@@ -395,9 +395,7 @@ class MainActivity: FlutterActivity() {
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to configure app behavior: ${e.message}")
                     }
-                    // FIX #5: Wait 1500ms after login for DRM session to fully stabilize
-                    // before signalling Flutter to proceed with playback.
-                    try { Thread.sleep(1500) } catch (ignored: InterruptedException) {}
+                    // Optimized: Proceed immediately without artificial delay
                     synchronized(lock) {
                         isLoginVerified = true
                         lock.notify()

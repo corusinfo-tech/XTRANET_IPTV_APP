@@ -121,6 +121,11 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
           break;
       }
     });
+
+    // FIX: If we navigated with "use_cache", resolve the real URL now that the channel is ready
+    if (_currentStreamUrl == "use_cache") {
+      _playChannel(_currentChannel);
+    }
   }
 
   Future<void> _zapChannel(int direction) async {
@@ -200,19 +205,21 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
                 ),
               );
               if (result != null && result.id != _currentChannel.id) {
-                setState(() {
-                  _isSwitching = true;
-                  _playerKeyCounter++;
-                });
-                await _playChannel(result);
+                final newUrl = await getDrmStreamUrl(result.streamingUrl);
+                if (mounted) {
+                  setState(() {
+                    _isSwitching = true;
+                    _playerKeyCounter++;
+                    _currentChannel = result;
+                    if (newUrl != null) _currentStreamUrl = newUrl;
+                  });
+                }
               } else {
-                // MenuScreen's video preview steals the ExoPlayer decoder.
-                // We must force the FullScreen player to reconnect when returning.
+                // Just refreshing existing channel
                 setState(() {
                   _isSwitching = true;
                   _playerKeyCounter++;
                 });
-                await _playChannel(_currentChannel);
               }
               // Brief delay to allow the old native surface to fully dispose
               await Future.delayed(const Duration(milliseconds: 50));
