@@ -117,28 +117,59 @@ class MainActivity: FlutterActivity() {
                     Thread {
                         try {
                             Log.i(TAG, "Requesting Stream URL for: $urlParam")
-                            Log.i(TAG, "Current DRM Session ID: ${drm!!.sessionId}")
-                            var url = drm!!.getTopLevelStreamM3u8Url(urlParam)
                             
-                            if (url == null && urlParam.contains("streamId=")) {
-                                // Try extracting streamId from gateway URL
-                                val uri = android.net.Uri.parse(urlParam)
-                                val streamId = uri.getQueryParameter("streamId")
-                                if (streamId != null) {
-                                    Log.i(TAG, "Attempting getTopLevelStreamM3u8Url with extracted ID: $streamId")
-                                    url = drm!!.getTopLevelStreamM3u8Url(streamId)
-                                }
+                            val isDrmInit = drm?.isInitialized ?: false
+                            val sessionId = drm?.sessionId ?: "NONE"
+                            Log.i(TAG, "DRM Status — Init: $isDrmInit, Session: $sessionId")
+
+                            if (!isDrmInit) {
+                                runOnUiThread { result.error("DRM_NOT_INIT", "DRM not initialized", null) }
+                                return@Thread
                             }
 
+                            // HELPER: Try different ways to get the URL
+                            fun resolveUrl(p: String): String? {
+                                // 1. Try as direct input (it might already be an ID or a valid resolved URL)
+                                var u = drm!!.getTopLevelStreamM3u8Url(p)
+                                
+                                // 2. Try REGEX extraction if it looks like a Panaccess gateway URL
+                                if (u == null) {
+                                    // Handles: streamId=123, streamId-123, streamld-123, streamld=123 (case insensitive)
+                                    val regex = Regex("(?:stream[Ii]d|streamld)[=-](\\d+)")
+                                    val matchResult = regex.find(p)
+                                    val extractedId = matchResult?.groupValues?.get(1)
+                                    
+                                    if (extractedId != null) {
+                                        Log.i(TAG, "Regex matched ID: $extractedId from source: $p")
+                                        u = drm!!.getTopLevelStreamM3u8Url(extractedId)
+                                    }
+                                }
+                                
+                                // 3. Try parsing as Int fallback
+                                if (u == null && p.all { it.isDigit() }) {
+                                    try {
+                                        val idInt = p.toInt()
+                                        u = drm!!.getTopLevelStreamM3u8Url(idInt.toString())
+                                    } catch (ignored: Exception) {}
+                                }
+                                return u
+                            }
+
+                            var url = resolveUrl(urlParam)
+
+                            // RETRY: If session is null or resolution failed, wait 1s and try again (handling slow startup)
+                            if (url == null && sessionId == "NONE") {
+                                Log.w(TAG, "Session is NONE, waiting 1500ms for stabilization...")
+                                Thread.sleep(1500)
+                                url = resolveUrl(urlParam)
+                            }
+                            
                             runOnUiThread {
                                 if (url != null) {
-                                    Log.i(TAG, "Stream URL success: $url")
+                                    Log.i(TAG, "Stream URL resolved successfully: $url")
                                     result.success(url)
                                 } else {
-                                    Log.e(TAG, "Stream URL returned null for: $urlParam")
-                                    // Fallback: if conversion fails, return the original URL as last resort
-                                    // Some OTT URLs might work directly if they are already m3u8
-                                    Log.w(TAG, "Returning original URL as fallback: $urlParam")
+                                    Log.e(TAG, "Stream URL resolution failed for: $urlParam. Falling back to original.")
                                     result.success(urlParam)
                                 }
                             }

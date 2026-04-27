@@ -40,14 +40,15 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
         // Setup MethodChannel for remote control event forwarding
         methodChannel = MethodChannel(messenger, "native_video_player_${id}")
         
-        // Enhanced Player initialization with LoadControl and FFmpeg Support
+        // Enhanced Player initialization with Optimized LoadControl (Addressing Buffering Issues)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                15000, // min buffer (15 seconds)
-                50000, // max buffer (50 seconds)
-                1500,  // buffer for playback (fast start)
-                2500   // buffer for resume
+                25000, // min buffer (25 seconds) - Increased for better stability
+                60000, // max buffer (60 seconds)
+                3000,  // buffer for playback (3 seconds) - Increased to prevent early buffering
+                5000   // buffer for resume
             )
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
             
         val renderersFactory = DefaultRenderersFactory(context)
@@ -55,6 +56,12 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
 
         player = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
+            .build()
+
+        // SET 1080p AS DEFAULT CLARITY
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setMaxVideoSize(1920, 1080)
             .build()
 
         methodChannel.setMethodCallHandler { call, result ->
@@ -116,6 +123,11 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
                     else -> "UNKNOWN"
                 }
                 android.util.Log.d("NativePlayerView", "Playback state changed: $stateString")
+                
+                // Forward state to Flutter
+                Handler(Looper.getMainLooper()).post {
+                    methodChannel.invokeMethod("onPlayerStateChanged", mapOf("state" to stateString))
+                }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -148,8 +160,10 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
 
         val drmInst = com.panaccess.android.drm.PanaccessDrm.getInst()
 
-        if (!drmInst.isInitialized || !drmInst.isPersonalized) {
-            android.util.Log.e("NativePlayerView", "DRM NOT READY — scheduling retry...")
+        // RELAXED Session ID Check: Only block on !isInitialized.
+        // Waiting for sessionId is often too strict as it might only be set internally or after playback starts.
+        if (!drmInst.isInitialized) {
+            android.util.Log.e("NativePlayerView", "DRM NOT INITIALIZED — scheduling retry...")
             Handler(Looper.getMainLooper()).postDelayed({
                 if (currentUrl == url) {
                     preparePlayer(url)
@@ -158,36 +172,65 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
             return
         }
 
+        // Send DRM details to Flutter for diagnostics
+        val sessionId = drmInst.sessionId ?: "NULL"
+        val boxMAC = drmInst.boxMAC ?: "NULL"
+        Handler(Looper.getMainLooper()).post {
+            methodChannel.invokeMethod("onDrmInfo", mapOf(
+                "sessionId" to sessionId,
+                "boxMAC" to boxMAC,
+                "isPersonalized" to drmInst.isPersonalized
+            ))
+        }
+
+        if (sessionId.isEmpty() || sessionId == "NULL") {
+            android.util.Log.w("NativePlayerView", "Session ID is empty, but proceeding with prepare anyway...")
+        }
+
+        if (!drmInst.isPersonalized) {
+            android.util.Log.w("NativePlayerView", "Device not yet personalized — attempt playback anyway...")
+        }
+
         try {
             val context = playerView.context
-            
-            // KEY FIX: Revert to DefaultDataSource.Factory for standard HTTP proxies!
-            // PanUdpDataSourceFactory crashes with `port out of range` on `http://` streams.
             val dataSourceFactory = DefaultDataSource.Factory(context)
             val mediaItem = MediaItem.fromUri(url)
             
-            val mediaSource = if (usePanExtractor || url.contains(".m3u8", ignoreCase = true)) {
+            // Revert to applying PanExtractor to all HLS streams by default if enabled
+            // Our conservative check might have been too strict for external encrypted streams.
+            val isHls = url.contains(".m3u8", ignoreCase = true) || 
+                        url.contains("localhost") || 
+                        url.contains("127.0.0.1") ||
+                        !url.contains("http")
+
+            val mediaSource = if (isHls) {
                 val hlsFactory = HlsMediaSource.Factory(dataSourceFactory)
                 if (usePanExtractor) {
+                    android.util.Log.d("NativePlayerView", "Applying PanHlsExtractorFactory for stream: $url")
                     hlsFactory.setExtractorFactory(PanHlsExtractorFactory())
                 }
                 hlsFactory.createMediaSource(mediaItem)
             } else {
+                android.util.Log.d("NativePlayerView", "Using standard MediaSource for stream: $url")
                 androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
                     .createMediaSource(mediaItem)
             }
 
-            android.util.Log.d("NativePlayerView", "Setting media source...")
+            android.util.Log.d("NativePlayerView", "Directly preparing player with MediaSource...")
             player.stop()
             player.clearMediaItems()
             player.setMediaSource(mediaSource)
             player.prepare()
             player.playWhenReady = true
 
-            android.util.Log.i("NativePlayerView", "Prepare successful for: $url")
-
         } catch (e: Exception) {
             android.util.Log.e("NativePlayerView", "CRITICAL FAILURE in preparePlayer: ${e.message}", e)
+            Handler(Looper.getMainLooper()).post {
+                methodChannel.invokeMethod(
+                    "onPlayerError",
+                    mapOf("message" to "Playback Initialization Failed: ${e.localizedMessage}")
+                )
+            }
         }
     }
 

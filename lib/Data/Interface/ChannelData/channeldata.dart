@@ -32,8 +32,8 @@ class Channel {
       channelNumber: int.tryParse(m['lcn']?.toString() ?? '0') ?? 0,
       logoUrl: m['img']?.toString() ?? m['logo']?.toString() ?? '',
       language: (m['epgLanguages'] != null && m['epgLanguages'].isNotEmpty) ? m['epgLanguages'][0].toString() : 'EN',
-      quality: 'HD',
-      streamingUrl: m['url']?.toString() ?? '',
+      quality: m['quality']?.toString() ?? '1080p',
+      streamingUrl: m['url']?.toString() ?? m['id']?.toString() ?? m['streamId']?.toString() ?? '',
     );
   }
 }

@@ -3,7 +3,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:xeranet_tv_application/Application/Presentation/OttPlatformsHomeScreen/ottplatformshomescreen.dart';
 import 'package:xeranet_tv_application/Data/Interface/ChannelData/channeldata.dart';
 import 'package:xeranet_tv_application/Application/Presentation/MenuScreen/menuscreen.dart';
 import 'package:xeranet_tv_application/services/discovery_service.dart';
@@ -37,10 +36,16 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
 
   MethodChannel? _channel;
   late Channel _currentChannel;
-  late String _currentStreamUrl;
-  int _zapCounter = 0;
+  String _currentStreamUrl = "";
   int _playerKeyCounter = 0;
   bool _isSwitching = false;
+
+  // DIAGNOSTICS
+  String _playbackState = "IDLE";
+  bool _showDiagnostics = true;
+  String _sdkSessionId = "UNKNOWN";
+  String _sdkMAC = "UNKNOWN";
+  bool _sdkPersonalized = false;
 
   @override
   void initState() {
@@ -85,7 +90,7 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
     // Optimized: Only setup licenses if they haven't been activated yet
     try {
       await PanDrmService.ensureLicense();
-    } catch(e) {
+    } catch (e) {
       debugPrint("Lazy License Setup Error: $e");
     }
     return await PanDrmService.getStreamUrl(rawUrl);
@@ -93,6 +98,29 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
 
   void _onPlatformViewCreated(int id) {
     _channel = MethodChannel('native_video_player_$id');
+    _channel?.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case "onPlayerError":
+          final message = call.arguments["message"] ?? "Unknown player error";
+          debugPrint("NativePlayer [FullScreen]: ERROR -> $message");
+          if (mounted) setState(() => _playbackState = "ERROR: $message");
+          break;
+        case "onPlayerStateChanged":
+          final state = call.arguments["state"] ?? "UNKNOWN";
+          debugPrint("NativePlayer [FullScreen]: STATE -> $state");
+          if (mounted) setState(() => _playbackState = state);
+          break;
+        case "onDrmInfo":
+          if (mounted) {
+            setState(() {
+              _sdkSessionId = call.arguments["sessionId"] ?? "NULL";
+              _sdkMAC = call.arguments["boxMAC"] ?? "NULL";
+              _sdkPersonalized = call.arguments["isPersonalized"] ?? false;
+            });
+          }
+          break;
+      }
+    });
   }
 
   Future<void> _zapChannel(int direction) async {
@@ -109,7 +137,6 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
     final stream = _discoveryService.streams[nextIndex];
     final channel = Channel.fromMap(stream);
 
-    final currentZap = ++_zapCounter;
     final streamUrl = await getDrmStreamUrl(channel.streamingUrl);
     if (streamUrl != null && mounted) {
       setState(() {
@@ -202,17 +229,66 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
           body: Stack(
             children: [
               Positioned.fill(
-                child: _isSwitching
-                    ? Container(color: Colors.black)
-                    : AndroidView(
-                        key: ValueKey(_playerKeyCounter),
-                        viewType: 'native_video_player',
-                        layoutDirection: TextDirection.ltr,
-                        creationParams: {"streamUrl": _currentStreamUrl},
-                        creationParamsCodec: const StandardMessageCodec(),
-                        onPlatformViewCreated: _onPlatformViewCreated,
-                      ),
+                child:
+                    _isSwitching
+                        ? Container(color: Colors.black)
+                        : AndroidView(
+                          key: ValueKey(_playerKeyCounter),
+                          viewType: 'native_video_player',
+                          layoutDirection: TextDirection.ltr,
+                          creationParams: {"streamUrl": _currentStreamUrl},
+                          creationParamsCodec: const StandardMessageCodec(),
+                          onPlatformViewCreated: _onPlatformViewCreated,
+                        ),
               ),
+
+              // Diagnostic Overlay
+              // if (_showDiagnostics)
+              //   Positioned(
+              //     top: 100,
+              //     left: 40,
+              //     right: 40,
+              //     child: IgnorePointer(
+              //       child: Container(
+              //         padding: const EdgeInsets.all(12),
+              //         decoration: BoxDecoration(
+              //           color: Colors.black54,
+              //           borderRadius: BorderRadius.circular(8),
+              //         ),
+              //         child: Column(
+              //           crossAxisAlignment: CrossAxisAlignment.start,
+              //           children: [
+              //             Text(
+              //               "STATUS: $_playbackState",
+              //               style: TextStyle(
+              //                 color: _playbackState == "READY" ? Colors.green : Colors.orange,
+              //                 fontWeight: FontWeight.bold,
+              //                 fontSize: 18,
+              //               ),
+              //             ),
+              //             const SizedBox(height: 8),
+              //             const Divider(color: Colors.white24, height: 1),
+              //             const SizedBox(height: 4),
+              //             Text("MAC: $_sdkMAC", style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              //             Text("SESSION: $_sdkSessionId", style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              //             Text("PERSONALIZED: $_sdkPersonalized", style: const TextStyle(color: Colors.white54, fontSize: 10)),
+              //             const SizedBox(height: 8),
+              //             TextButton(
+              //               onPressed: () {
+              //                 _playerKeyCounter++;
+              //                 _playChannel(_currentChannel);
+              //               },
+              //               style: TextButton.styleFrom(
+              //                 backgroundColor: Colors.blue.withOpacity(0.3),
+              //                 padding: const EdgeInsets.symmetric(horizontal: 12),
+              //               ),
+              //               child: const Text("MANUAL RETRY", style: TextStyle(color: Colors.white, fontSize: 12)),
+              //             ),
+              //           ],
+              //         ),
+              //       ),
+              //     ),
+              //   ),
 
               // Watermark Logo
               // Positioned.fill(
@@ -230,51 +306,50 @@ class _FullScreenPlayerWidgetState extends State<FullScreenPlayerWidget>
               // ),
 
               // Top Info Bar (Logo & Time)
-              Positioned(
-                top: 40,
-                left: 40,
-                child: FadeTransition(
-                  opacity: _fade!,
-                  child: const SizedBox.shrink(),
-                  //  Row(
-                  //   children: [
-                  //     Container(
-                  //       height: 60,
-                  //       width: 60,
-                  //       decoration: BoxDecoration(
-                  //         color: Colors.white10,
-                  //         borderRadius: BorderRadius.circular(20),
-                  //       ),
-                  //       child:
-                  //           _currentChannel.logoUrl.isNotEmpty
-                  //               ? ClipRRect(
-                  //                 borderRadius: BorderRadius.circular(20),
-                  //                 child: Image.network(
-                  //                   _currentChannel.logoUrl,
-                  //                   fit: BoxFit.cover,
-                  //                   errorBuilder:
-                  //                       (_, __, ___) => const Icon(
-                  //                         Icons.tv,
-                  //                         color: Colors.white24,
-                  //                       ),
-                  //                 ),
-                  //               )
-                  //               : const Icon(Icons.tv, color: Colors.white24),
-                  //     ),
-                  //     const SizedBox(width: 20),
-                  //     Text(
-                  //       _currentChannel.name,
-                  //       style: const TextStyle(
-                  //         color: Colors.white,
-                  //         fontSize: 25,
-                  //         fontWeight: FontWeight.w600,
-                  //       ),
-                  //     ),
-                  //   ],
-                  // ),
-                ),
-              ),
-
+              // Positioned(
+              //   top: 40,
+              //   left: 40,
+              //   child: FadeTransition(
+              //     opacity: _fade!,
+              //     child: const SizedBox.shrink(),
+              //  Row(
+              //   children: [
+              //     Container(
+              //       height: 60,
+              //       width: 60,
+              //       decoration: BoxDecoration(
+              //         color: Colors.white10,
+              //         borderRadius: BorderRadius.circular(20),
+              //       ),
+              //       child:
+              //           _currentChannel.logoUrl.isNotEmpty
+              //               ? ClipRRect(
+              //                 borderRadius: BorderRadius.circular(20),
+              //                 child: Image.network(
+              //                   _currentChannel.logoUrl,
+              //                   fit: BoxFit.cover,
+              //                   errorBuilder:
+              //                       (_, __, ___) => const Icon(
+              //                         Icons.tv,
+              //                         color: Colors.white24,
+              //                       ),
+              //                 ),
+              //               )
+              //               : const Icon(Icons.tv, color: Colors.white24),
+              //     ),
+              //     const SizedBox(width: 20),
+              //     Text(
+              //       _currentChannel.name,
+              //       style: const TextStyle(
+              //         color: Colors.white,
+              //         fontSize: 25,
+              //         fontWeight: FontWeight.w600,
+              //       ),
+              //     ),
+              //   ],
+              // ),
+              //   ),
+              // ),
               Positioned(
                 top: 40,
                 right: 40,

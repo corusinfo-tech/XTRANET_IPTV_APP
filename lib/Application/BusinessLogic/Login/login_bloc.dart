@@ -32,7 +32,10 @@ class LoginBloc extends Bloc<LoginEvent, LoginState> {
         final hasCache = await DiscoveryService().loadFromCache();
 
         if (hasCache) {
-          // 🚀 INSTANT UI: Navigate immediately using cached data
+          // 🚀 ENSURE DRM INIT before navigating to prevent early player failures
+          await PanDrmService.initDrm().catchError((e) => debugPrint("Auto-login InitDrm error: $e"));
+          
+          // Navigate immediately using cached data
           emit(const LoginSuccess(streamUrl: "use_cache"));
           
           // Background: Silently refresh session and data

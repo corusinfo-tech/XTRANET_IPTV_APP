@@ -45,6 +45,7 @@ class DiscoveryService {
     
     if (sStr != null) {
       _streams = await compute(_parseData, sStr);
+      _sortStreams();
       if (_streams.isNotEmpty) {
         final firstStream = _streams[0];
         _selectedStreamId = firstStream["id"] ?? firstStream["streamId"];
@@ -82,6 +83,7 @@ class DiscoveryService {
 
       _bouquets = fetchedBouquets;
       _streams = processedStreams;
+      _sortStreams();
 
       // 3. Save cache post-compute inside safe lock
       // We only overwrite cache if data actually arrived successfully to prevent overwriting with blanks
@@ -140,5 +142,20 @@ class DiscoveryService {
       return _streams;
     }
     return getStreamsForBouquet(_selectedBouquetId!);
+  }
+
+  /// Sort streams by LCN (Logical Channel Number) in ascending order
+  void _sortStreams() {
+    try {
+      if (_streams.isEmpty) return;
+      _streams.sort((a, b) {
+        final aNum = int.tryParse(a['lcn']?.toString() ?? '0') ?? 0;
+        final bNum = int.tryParse(b['lcn']?.toString() ?? '0') ?? 0;
+        return aNum.compareTo(bNum);
+      });
+      debugPrint("DiscoveryService: Sorted ${_streams.length} streams by LCN.");
+    } catch (e) {
+      debugPrint("DiscoveryService: Error sorting streams: $e");
+    }
   }
 }
