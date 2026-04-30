@@ -16,10 +16,12 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController emailController =
-      TextEditingController(text: "5391348");
-  final TextEditingController passwordController =
-      TextEditingController(text: "Tz6M6bWJ");
+  final TextEditingController emailController = TextEditingController(
+    text: "5385465",
+  );
+  final TextEditingController passwordController = TextEditingController(
+    text: "Z9gCuZPZ",
+  );
 
   final FocusNode _emailFocus = FocusNode();
   final FocusNode _passwordFocus = FocusNode();
@@ -92,19 +94,22 @@ class _LoginScreenState extends State<LoginScreen> {
           final streamId = discovery.selectedStreamId?.toString();
           final stream = discovery.streams.firstWhere(
             (s) => s["id"]?.toString() == streamId,
-            orElse: () => discovery.streams.isNotEmpty ? discovery.streams[0] : null,
+            orElse:
+                () =>
+                    discovery.streams.isNotEmpty ? discovery.streams[0] : null,
           );
-          
+
           if (stream != null) {
             final channel = Channel.fromMap(stream);
 
             Navigator.pushReplacement(
               context,
               MaterialPageRoute(
-                builder: (_) => FullScreenPlayerWidget(
-                  channel: channel,
-                  streamUrl: state.streamUrl,
-                ),
+                builder:
+                    (_) => FullScreenPlayerWidget(
+                      channel: channel,
+                      streamUrl: state.streamUrl,
+                    ),
               ),
             );
           } else {
@@ -118,7 +123,9 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       },
       builder: (context, state) {
-        if (state is AutoLoginInProgress || state is LoginLoading || state is LoginSuccess) {
+        if (state is AutoLoginInProgress ||
+            state is LoginLoading ||
+            state is LoginSuccess) {
           return const Scaffold(
             backgroundColor: Color(0xFF1a1a2e),
             body: Center(
@@ -215,7 +222,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               hint: "Password",
                               icon: Icons.lock_outline,
                               field: "password",
-                              obscure: true,
+                              // obscure: true,
                               nextFocus: _loginButtonFocus,
                             ),
                           ),

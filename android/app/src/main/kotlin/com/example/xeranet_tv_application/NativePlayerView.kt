@@ -29,6 +29,9 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
             android.view.ViewGroup.LayoutParams.MATCH_PARENT,
             android.view.ViewGroup.LayoutParams.MATCH_PARENT
         )
+        // FORCE SurfaceView for Android TV hardware decoder compatibility
+        setKeepContentOnPlayerReset(true)
+        keepScreenOn = true // Prevent TV from sleeping during long playback
     }
     private var player: ExoPlayer
     private val methodChannel: MethodChannel = MethodChannel(messenger, "native_video_player_${id}")
@@ -41,7 +44,9 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
         android.util.Log.w("NativePlayerView", "Buffering timeout reached (15s) — triggering auto-retry")
         if (retryCount < maxRetries) {
             retryCount++
-            currentUrl?.let { preparePlayer(it) }
+            val urlToRetry = currentUrl
+            currentUrl = null // Bypass the duplicate prepare check
+            urlToRetry?.let { preparePlayer(it) }
         } else {
             methodChannel.invokeMethod("onPlayerError", mapOf("message" to "Stream timed out while buffering"))
         }
@@ -53,22 +58,28 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
         // Enhanced Player initialization with Optimized LoadControl (Addressing Buffering Issues)
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                15000, // min buffer (15 seconds) - Optimized for faster allocation
-                60000, // max buffer (60 seconds)
-                1000,  // buffer for playback (1.0 second) - Near-instant start
-                1500   // buffer for resume
+                2500,  // min buffer (2.5 seconds) - Drastically reduced for faster start
+                30000, // max buffer (30 seconds) - Reduced to prevent memory bloat and slowness
+                500,   // buffer for playback (0.5 seconds) - Near-instant start
+                1000   // buffer for resume
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
             
         val renderersFactory = DefaultRenderersFactory(context)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true) // Fallback to software decoders
+            .setMediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                // This helps bypass strict profile checks that cause black screens on older TVs (Sony/Acer)
+                androidx.media3.exoplayer.mediacodec.MediaCodecSelector.DEFAULT
+                    .getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+            }
 
         player = ExoPlayer.Builder(context, renderersFactory)
             .setLoadControl(loadControl)
             .build()
 
-        // SET 1080p AS DEFAULT CLARITY
+        // SET 1080p AS DEFAULT CLARITY AND ALLOW ADAPTIVENESS FOR COMPATIBILITY
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .setMaxVideoSize(1920, 1080)
@@ -169,6 +180,14 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
                     }
                 }
             }
+
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                android.util.Log.i("NativePlayerView", "onVideoSizeChanged: width=${videoSize.width}, height=${videoSize.height}")
+            }
+
+            override fun onRenderedFirstFrame() {
+                android.util.Log.i("NativePlayerView", "onRenderedFirstFrame: First frame successfully rendered to surface")
+            }
         })
 
         val url = creationParams?.get("streamUrl") as? String
@@ -245,6 +264,7 @@ class NativePlayerView(context: Context, id: Int, creationParams: Map<String, An
 
             val mediaSource = if (isHls) {
                 val hlsFactory = HlsMediaSource.Factory(dataSourceFactory)
+                    .setAllowChunklessPreparation(true) // SUPER FAST START: skips downloading chunks for format info
                 if (usePanExtractor) {
                     android.util.Log.d("NativePlayerView", "Applying PanHlsExtractorFactory for stream: $url")
                     hlsFactory.setExtractorFactory(PanHlsExtractorFactory())

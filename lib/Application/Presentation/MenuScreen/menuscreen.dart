@@ -72,6 +72,7 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   MethodChannel? _previewChannelView;
   bool _isPreviewReady = false;
   int _previewZapCounter = 0;
+  bool _isFullScreenActive = false;
 
   final FocusNode _mainFocusNode = FocusNode();
 
@@ -185,7 +186,13 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
   Future<void> _launchFullScreen(Channel ch) async {
     final streamUrl = await getDrmStreamUrl(ch.streamingUrl);
     if (streamUrl != null && mounted) {
-      Navigator.push(
+      setState(() {
+        _isFullScreenActive = true;
+      });
+      // Short delay to ensure AndroidView is unmounted and native player is released
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder:
@@ -193,6 +200,15 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                   FullScreenPlayerWidget(channel: ch, streamUrl: streamUrl),
         ),
       );
+
+      if (mounted) {
+        setState(() {
+          _isFullScreenActive = false;
+          _isPreviewReady = false;
+        });
+        // We do not call _playPreview here immediately because AndroidView needs to re-mount
+        // and trigger _onPreviewPlatformViewCreated again.
+      }
     }
   }
 
@@ -612,13 +628,15 @@ class _MainScreenState extends State<MainScreen> with RouteAware {
                 ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
-                  child: AndroidView(
-                    viewType: 'native_video_player',
-                    layoutDirection: TextDirection.ltr,
-                    creationParams: const {},
-                    creationParamsCodec: const StandardMessageCodec(),
-                    onPlatformViewCreated: _onPreviewPlatformViewCreated,
-                  ),
+                  child: _isFullScreenActive 
+                      ? const Center(child: CircularProgressIndicator())
+                      : AndroidView(
+                          viewType: 'native_video_player',
+                          layoutDirection: TextDirection.ltr,
+                          creationParams: const {},
+                          creationParamsCodec: const StandardMessageCodec(),
+                          onPlatformViewCreated: _onPreviewPlatformViewCreated,
+                        ),
                 ),
               ),
             ),
